@@ -20,8 +20,24 @@
 #define ARM_J5_MAX    1.67410f
 #define ARM_J5_MIN   -1.76146317f
 
-// --- 位置速度模式的速度上限，沿用旧臂 All_Init.c 初值 ---
-#define ARM_JOINT_SPEED   2.0f
+// --- MIT 力位混合模式的每关节增益（⚠️ 必须按实车逐关节整定！）---
+// MIT 模式电机内部：力矩 = Kp*(目标位-当前位) + Kd*(目标速-当前速) + 前馈力矩。
+// 关节做位置控制必须给非零 Kp/Kd：Kp 太小→托不住臂自重会下坠；太大→抖动啸叫；
+// Kd 提供阻尼抑制振荡。取值范围见 DM_Motor.h：Kp 0~500，Kd 0~5。
+// 下面是保守起调值，务必先架起/托住机械臂逐个关节试，确认不塌不抖再撒手。
+// J1/J2 是 DM8009（肩部承重大，刚度需更高），J3/J4 DM4340，J5/J6 DM4310（腕部小）。
+#define ARM_KP_J1  30.0f
+#define ARM_KD_J1   1.5f
+#define ARM_KP_J2  30.0f
+#define ARM_KD_J2   1.5f
+#define ARM_KP_J3  20.0f
+#define ARM_KD_J3   1.0f
+#define ARM_KP_J4  20.0f
+#define ARM_KD_J4   1.0f
+#define ARM_KP_J5  10.0f
+#define ARM_KD_J5   0.8f
+#define ARM_KP_J6  10.0f
+#define ARM_KD_J6   0.8f
 
 // --- 末端夹爪 MIT 力矩，沿用旧臂 Move_Task.c：闭合 +1.0 / 张开 -1.2 ---
 #define TERMINAL_TORQUE_CLOSE   1.0f
@@ -146,25 +162,29 @@ void Engineer_Arm_Task(const Arm_Motor_Group_t *a_motor, const DBUS_Typedef *dbu
     Arm_Input_Update(dbus, vt13);
 
     // ---- 电机保活：离线的关节清错重使能，全部在线才允许下发控制帧 ----
+    // 使能模式必须与下发控制帧的模式一致：现在 7 个电机全部用 MIT_MODE。
     uint8_t all_online = 1;
-    all_online &= Arm_Motor_Keepalive(&hfdcan2, 0x01, POS_MODE, &a_motor->J1_8009);
-    all_online &= Arm_Motor_Keepalive(&hfdcan2, 0x02, POS_MODE, &a_motor->J2_8009);
-    all_online &= Arm_Motor_Keepalive(&hfdcan2, 0x03, POS_MODE, &a_motor->J3_4340);
-    all_online &= Arm_Motor_Keepalive(&hfdcan3, 0x04, POS_MODE, &a_motor->J4_4340);
-    all_online &= Arm_Motor_Keepalive(&hfdcan3, 0x05, POS_MODE, &a_motor->J5_4310);
-    all_online &= Arm_Motor_Keepalive(&hfdcan3, 0x06, POS_MODE, &a_motor->J6_4310);
+    all_online &= Arm_Motor_Keepalive(&hfdcan2, 0x01, MIT_MODE, &a_motor->J1_8009);
+    all_online &= Arm_Motor_Keepalive(&hfdcan2, 0x02, MIT_MODE, &a_motor->J2_8009);
+    all_online &= Arm_Motor_Keepalive(&hfdcan2, 0x03, MIT_MODE, &a_motor->J3_4340);
+    all_online &= Arm_Motor_Keepalive(&hfdcan3, 0x04, MIT_MODE, &a_motor->J4_4340);
+    all_online &= Arm_Motor_Keepalive(&hfdcan3, 0x05, MIT_MODE, &a_motor->J5_4310);
+    all_online &= Arm_Motor_Keepalive(&hfdcan3, 0x06, MIT_MODE, &a_motor->J6_4310);
     all_online &= Arm_Motor_Keepalive(&hfdcan3, 0x07, MIT_MODE, &a_motor->Terminal_3507);
 
     if (!all_online) return;
 
-    // ---- 下发控制帧：J1~J6 位置速度模式，末端夹爪 MIT 力矩模式 ----
-    Pos_Speed_Ctrl(&hfdcan2, 0x01, s_joint_target[0], ARM_JOINT_SPEED);
-    Pos_Speed_Ctrl(&hfdcan2, 0x02, s_joint_target[1], ARM_JOINT_SPEED);
-    Pos_Speed_Ctrl(&hfdcan2, 0x03, s_joint_target[2], ARM_JOINT_SPEED);
-    Pos_Speed_Ctrl(&hfdcan3, 0x04, s_joint_target[3], ARM_JOINT_SPEED);
-    Pos_Speed_Ctrl(&hfdcan3, 0x05, s_joint_target[4], ARM_JOINT_SPEED);
-    Pos_Speed_Ctrl(&hfdcan3, 0x06, s_joint_target[5], ARM_JOINT_SPEED);
+    // ---- 下发控制帧：J1~J6 全部 MIT 力位混合模式，末端夹爪 MIT 纯力矩模式 ----
+    // MIT_Ctrl(总线, ID, 目标位置, 目标速度, Kp, Kd, 前馈力矩)。
+    // 关节做位置保持：目标速度给 0（不主动带速）、前馈力矩给 0（全靠 Kp/Kd 闭环）。
+    MIT_Ctrl(&hfdcan2, 0x01, s_joint_target[0], 0.0f, ARM_KP_J1, ARM_KD_J1, 0.0f);
+    MIT_Ctrl(&hfdcan2, 0x02, s_joint_target[1], 0.0f, ARM_KP_J2, ARM_KD_J2, 0.0f);
+    MIT_Ctrl(&hfdcan2, 0x03, s_joint_target[2], 0.0f, ARM_KP_J3, ARM_KD_J3, 0.0f);
+    MIT_Ctrl(&hfdcan3, 0x04, s_joint_target[3], 0.0f, ARM_KP_J4, ARM_KD_J4, 0.0f);
+    MIT_Ctrl(&hfdcan3, 0x05, s_joint_target[4], 0.0f, ARM_KP_J5, ARM_KD_J5, 0.0f);
+    MIT_Ctrl(&hfdcan3, 0x06, s_joint_target[5], 0.0f, ARM_KP_J6, ARM_KD_J6, 0.0f);
 
+    // 末端夹爪：Kp/Kd 给 0，只靠前馈力矩输出恒定夹持力（闭合正、张开负）。
     float terminal_torque = s_clamp_close ? TERMINAL_TORQUE_CLOSE : TERMINAL_TORQUE_OPEN;
     MIT_Ctrl(&hfdcan3, 0x07, 0.0f, 0.0f, 0.0f, 0.0f, terminal_torque);
 }
