@@ -1,0 +1,224 @@
+//
+// Created by CaoKangqi on 2026/1/25.
+//
+#include "Horizon_MATH.h"
+
+#include <math.h>
+#include <stdlib.h>
+#include <string.h>
+
+#include "stm32h723xx.h"
+
+/************************************************************ 万能分隔符 **************************************************************
+ *	@performance:	    // int16_t 绝对值
+ *	@parameter:		    // DATA：需要计算绝对值的 int16_t 类型数据
+ *	@ReadMe:			//
+ ************************************************************************************************************************************/
+int16_t MATH_ABS_int16_t(int16_t DATA)
+{
+    return DATA>>15 == 0 ? DATA : (~DATA + 1);
+}
+
+int32_t MATH_ABS_int32_t(int32_t DATA)
+{
+    if (DATA < 0) return -DATA;
+    if (DATA > 0) return DATA;
+	return 0;
+}
+
+int64_t MATH_ABS_int64_t(int64_t DATA)
+{
+    if (DATA < 0) return -DATA;
+    if (DATA > 0) return DATA;
+    return 0;
+}
+
+/************************************************************ 万能分隔符 **************************************************************
+ *	@performance:	    // float 绝对值
+ *	@parameter:		    // DATA：需要计算绝对值的 float 类型数据
+ *	@ReadMe:			//
+ ************************************************************************************************************************************/
+float MATH_ABS_float(float DATA) {
+    uint32_t temp;
+    memcpy(&temp, &DATA, 4);
+    temp &= 0x7FFFFFFF;
+    float result;
+    memcpy(&result, &temp, 4);
+    return result;
+}
+
+/************************************************************ 万能分隔符 **************************************************************
+ *	@performance:	    // float 限幅
+ *	@parameter:		    // MAX：上限值；MIN：下限值；DATA：需要限幅的 float 类型数据
+ *	@ReadMe:			//
+ ************************************************************************************************************************************/
+float MATH_Limit_float(float MAX , float MIN , float DATA)
+{
+    return (DATA > MAX) ? MAX : ((DATA < MIN) ? MIN : DATA);
+}
+
+/* 私有辅助函数：安全的字节流与浮点数转换 (替代原先的全局 Union) */
+inline float Bytes_To_Float(const uint8_t *data) {
+    float f;
+    memcpy(&f, data, 4);
+    return f;
+}
+inline void Float_To_Bytes(float f, uint8_t *data) {
+    memcpy(data, &f, 4);
+}
+/************************************************************ 万能分隔符 **************************************************************
+ *	@performance:	    // int16 限幅
+ *	@parameter:		    // MAX：上限值；MIN：下限值；DATA：需要限幅的 int16_t 类型数据
+ *	@ReadMe:			//
+ ************************************************************************************************************************************/
+int16_t MATH_Limit_int16(int16_t MAX , int16_t MIN , int16_t DATA)
+{
+    return (DATA > MAX) ? MAX : ((DATA < MIN) ? MIN : DATA);
+}
+
+/************************************************************ 万能分隔符 **************************************************************
+ *	@performance:	    // 置位/复位单个比特位
+ *	@parameter:		    // byte：待操作字节的指针；position：要设置的位所在位置（0到7）；value：要设置的值（1=置1，0=置0）
+ *	@ReadMe:			//
+ ************************************************************************************************************************************/
+void MATH_SETBIT(unsigned char* byte , int position , int value)
+{
+    unsigned char mask = 1 << position;  // 生成一个只有指定位置为1的掩码
+    if (value)
+    {
+        *byte |= mask;  // 将指定位置设置为1
+    }
+    else
+    {
+        *byte &= ~mask;  // 将指定位置设置为0
+    }
+}
+
+/************************************************************ 万能分隔符 **************************************************************
+ *	@performance:	    // float 平方根倒数
+ *	@parameter:		    // DATA：需要计算平方根倒数的 float 类型数据
+ *	@ReadMe:			//
+ ************************************************************************************************************************************/
+float MATH_INV_SQRT_float(float x) {
+    uint32_t i;
+    memcpy(&i, &x, 4);      // 将 float 位拷贝给 uint32_t
+    i = 0x5f3759df - (i >> 1);
+    memcpy(&x, &i, 4);      // 再拷贝回来
+    return x * (1.5f - 0.5f * x * x * x);
+}
+
+float Hex_To_Float(uint32_t *Byte,int num)// 十六进制到浮点数
+{
+  return *((float*)Byte);
+}
+
+/**
+************************************************************************
+* @brief:      	float_to_uint: 浮点数转换为无符号整数函数
+* @param[in]:   x_float:	待转换的浮点数
+* @param[in]:   x_min:		范围最小值
+* @param[in]:   x_max:		范围最大值
+* @param[in]:   bits: 		目标无符号整数的位数
+* @retval:     	无符号整数结果
+* @details:    	将给定的浮点数 x 在指定范围 [x_min, x_max] 内进行线性映射，映射结果为一个指定位数的无符号整数
+************************************************************************
+**/
+int float_to_uint(float x_float, float x_min, float x_max, int bits)
+{
+  /* Converts a float to an unsigned int, given range and number of bits */
+  float span = x_max - x_min;
+  float offset = x_min;
+  return (int) ((x_float-offset)*((float)((1<<bits)-1))/span);
+}
+
+/**
+************************************************************************
+* @brief:      	uint_to_float: 无符号整数转换为浮点数函数
+* @param[in]:   x_int: 待转换的无符号整数
+* @param[in]:   x_min: 范围最小值
+* @param[in]:   x_max: 范围最大值
+* @param[in]:   bits:  无符号整数的位数
+* @retval:     	浮点数结果
+* @details:    	将给定的无符号整数 x_int 在指定范围 [x_min, x_max] 内进行线性映射，映射结果为一个浮点数
+************************************************************************
+**/
+float uint_to_float(int x_int, float x_min, float x_max, int bits)
+{
+  /* converts unsigned int to float, given range and number of bits */
+  float span = x_max - x_min;
+  float offset = x_min;
+  return ((float)x_int)*span/((float)((1<<bits)-1)) + offset;
+}
+
+/**
+ * @brief CORDIC Atan2 快速函数
+ */
+inline float CORDIC_Atan2_Fast(float y, float x) {
+    // 1. 使用 INT32_MAX 避免溢出 (2147483647.0f)
+    const float f_q31 = 2147483647.0f;
+    int32_t arg_x = (int32_t)(x * f_q31);
+    int32_t arg_y = (int32_t)(y * f_q31);
+    CORDIC->CSR = (2 << CORDIC_CSR_FUNC_Pos) |
+                  (6 << CORDIC_CSR_PRECISION_Pos) |
+                  (1 << CORDIC_CSR_NARGS_Pos) |   // NARG=1 在寄存器位定义中代表 2个参数
+                  (0 << CORDIC_CSR_NRES_Pos);    // NRES=0 在寄存器位定义中代表 1个结果
+    CORDIC->WDATA = arg_x;
+    CORDIC->WDATA = arg_y; // 写入第二个参数触发计算
+    int32_t res = CORDIC->RDATA;
+    return (float)res * 8.38190317e-8f;
+}
+
+/**
+ * @brief CORDIC 单独算 Sin (输入角度为度 °)
+ */
+inline float CORDIC_Sin_Fast(float angle_deg) {
+    if (angle_deg > 180.0f || angle_deg < -180.0f) {
+        angle_deg = fmodf(angle_deg + 180.0f, 360.0f);
+        if (angle_deg < 0.0f) angle_deg += 360.0f;
+        angle_deg -= 180.0f;
+    }
+    int32_t arg = (int32_t)(angle_deg * (2147483648.0f / 180.0f));
+    CORDIC->CSR = (1 << CORDIC_CSR_FUNC_Pos)      |
+                  (6 << CORDIC_CSR_PRECISION_Pos) |
+                  (0 << CORDIC_CSR_SCALE_Pos)     |
+                  (0 << CORDIC_CSR_NARGS_Pos)     |
+                  (0 << CORDIC_CSR_NRES_Pos);
+    CORDIC->WDATA = arg;
+    return (float)(int32_t)CORDIC->RDATA * (1.0f / 2147483648.0f);
+}
+
+/**
+ * @brief CORDIC 单独算 Cos (输入角度为度 °，支持任意大小角度)
+ */
+inline float CORDIC_Cos_Fast(float angle_deg) {
+    if (angle_deg > 180.0f || angle_deg < -180.0f) {
+        angle_deg = fmodf(angle_deg + 180.0f, 360.0f);
+        if (angle_deg < 0.0f) angle_deg += 360.0f;
+        angle_deg -= 180.0f;
+    }
+    int32_t arg = (int32_t)(angle_deg * (2147483648.0f / 180.0f));
+    CORDIC->CSR = (0 << CORDIC_CSR_FUNC_Pos)      |
+                  (6 << CORDIC_CSR_PRECISION_Pos) |
+                  (0 << CORDIC_CSR_SCALE_Pos)     |
+                  (0 << CORDIC_CSR_NARGS_Pos)     |
+                  (0 << CORDIC_CSR_NRES_Pos);
+    CORDIC->WDATA = arg;
+    return (float)(int32_t)CORDIC->RDATA * (1.0f / 2147483648.0f);
+}
+
+/**
+ * @brief 一阶滤波器，适用于电机速度等物理量的平滑处理
+ * @param now 当前原始值
+ * @param last 上一次滤波后的值
+ * @param thresholdValue 突变抑制阈值，超过该值则认为是异常突变，进行特殊处理
+ * @return 滤波后的值
+ * @note 当输入变化超过阈值时，输出将更倾向于上一次的值，以抑制突变；否则正常进行一阶滤波
+ */
+int16_t OneFilter1(int16_t now, int16_t last, float thresholdValue)
+{
+    const float alpha = 0.8f;
+    if(abs(now - last) >= thresholdValue)
+        return (int16_t)(now * 0.2f + last * 0.8f); // 突变抑制
+    else
+        return (int16_t)(now * alpha + last * (1.0f - alpha));
+}
