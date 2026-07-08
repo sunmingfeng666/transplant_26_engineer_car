@@ -14,6 +14,7 @@
 #include "System_Indicator.h"
 #include "../../../Device/Host_Comm/Vofa.h"
 #include "VT13.h"
+#include "Arm_Ctrl.h"
 //指令中心任务 200Hz
 void Command_Task(void *argument)
 {
@@ -29,6 +30,8 @@ void Command_Task(void *argument)
     PubRegister("chassis_motors", &chassis_motors, sizeof(Chassis_Motor_Group_t));
     PubRegister("gimbal_motors",  &gimbal_motors,  sizeof(Gimbal_Motor_Group_t));
     PubRegister("shoot_motors",   &shoot_motors,   sizeof(Shoot_Motor_Group_t));
+    // 发布机械臂电机反馈快照，供 Motor_Task 订阅。
+    PubRegister("arm_motors",     &arm_motors,     sizeof(Arm_Motor_Group_t));
 
     Robot_Cmd_Init();
     for(;;)
@@ -63,6 +66,9 @@ static IMU_Data_t imu ={0};
 static Chassis_Motor_Group_t chassis_m = {0};
 static Gimbal_Motor_Group_t gimbal_m = {0};
 static Shoot_Motor_Group_t shoot_m = {0};
+static Arm_Motor_Group_t arm_m = {0};
+static DBUS_Typedef dbus_snap = {0};
+static VT13_Typedef vt13_snap = {0};
 void Motor_Task(void *argument)
 {
     (void)argument;
@@ -73,11 +79,20 @@ void Motor_Task(void *argument)
     Subscriber_t *c_motor_sub = NULL;
     Subscriber_t *g_motor_sub = NULL;
     Subscriber_t *s_motor_sub = NULL;
+    Subscriber_t *a_motor_sub = NULL;
+    Subscriber_t *dbus_sub = NULL;
+    Subscriber_t *vt13_sub = NULL;
 
     imu_sub = SubRegister("imu_data", sizeof(IMU_Data_t));
     c_motor_sub = SubRegister("chassis_motors", sizeof(Chassis_Motor_Group_t));
     g_motor_sub = SubRegister("gimbal_motors", sizeof(Gimbal_Motor_Group_t));
     s_motor_sub = SubRegister("shoot_motors", sizeof(Shoot_Motor_Group_t));
+    a_motor_sub = SubRegister("arm_motors", sizeof(Arm_Motor_Group_t));
+    dbus_sub = SubRegister("dbus_data", sizeof(DBUS_Typedef));
+    vt13_sub = SubRegister("vt13_data", sizeof(VT13_Typedef));
+
+    // 机械臂控制初始化（第一版：基础遥操作）。
+    Engineer_Arm_Init();
 
     for(;;)
     {
@@ -87,7 +102,12 @@ void Motor_Task(void *argument)
         if (c_motor_sub) SubGetMessage(c_motor_sub, &chassis_m);
         if (g_motor_sub) SubGetMessage(g_motor_sub, &gimbal_m);
         if (s_motor_sub)  SubGetMessage(s_motor_sub, &shoot_m);
+        if (a_motor_sub) SubGetMessage(a_motor_sub, &arm_m);
+        if (dbus_sub) SubGetMessage(dbus_sub, &dbus_snap);
+        if (vt13_sub) SubGetMessage(vt13_sub, &vt13_snap);
 
+        // 机械臂电机输出路径：DBUS/VT13 遥控 → 7 个达妙关节/夹爪。
+        Engineer_Arm_Task(&arm_m, &dbus_snap, &vt13_snap);
     }
 }
 
