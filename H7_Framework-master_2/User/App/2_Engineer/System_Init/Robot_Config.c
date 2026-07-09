@@ -22,8 +22,7 @@ BSP_PWM_t trigger_pwm = {&htim4, TIM_CHANNEL_2, PWM_CHANNEL_NORMAL};
 UART_RX_NODE(&huart5, 18, DBUS_RX_DATA, NULL, 18, &DBUS, DBUS_Resolved);
 OFFLINE_NODE(&DBUS.offline, DBUS_OFFLINE_TIME, GROUP_NONE);
 
-UART_RX_NODE(&huart7, 21, VT13_RX_DATA, NULL, 21, &VT13, VT13_Resolved);
-OFFLINE_NODE(&VT13.offline, DBUS_OFFLINE_TIME, GROUP_NONE);
+// UART7 预留为上位机 VOFA 波形发送口，不在本板注册接收协议。
 
 // 遥控板 USART10 接收底盘板 USART10 回传的固定长度状态反馈帧。
 // 两个缓冲区放在 D2 RAM，因为 DMA 不能访问 H7 的所有内存区域。
