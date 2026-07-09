@@ -6,9 +6,11 @@
 
 - `master_enable = 0`: all six joints use position-speed mode.
 - `master_enable = 1`: J2/J4/J5 follow `axis_mode[n]`; others stay position mode.
-- `master_enable = 0xFF`: **disable mode** — every joint motor and the terminal
-  gripper are sent `DM_CMD_RESET_MODE`. Motors release all torque and the arm
-  can be moved by hand. State reports `5` (ARM_STATE_DISABLED).
+- `Arm_Disable_Enable = 1` (standalone switch in `Arm_Ctrl.h`, mirrors
+  `Arm_MatlabDebug_Enable`): **disable mode** — every joint motor and the
+  terminal gripper are sent `DM_CMD_RESET_MODE`. Motors release all torque and
+  the arm can be moved by hand. State reports `5` (ARM_STATE_DISABLED). This
+  overrides `master_enable` regardless of its value.
 - `axis_mode[n] = 0`: position-speed mode.
 - `axis_mode[n] = 1`: gravity compensation.
 - `axis_mode[n] = 2`: gravity compensation plus external impedance.
@@ -16,17 +18,19 @@
 Only axes 1, 3, and 4 (J2, J4, and J5) accept gravity or impedance modes.
 The defaults are safe: `master_enable` is zero and every axis is in position mode.
 
-### Disable mode (`master_enable = 0xFF`)
+### Disable mode (`Arm_Disable_Enable = 1`)
 
 Sets all six joints plus the terminal gripper to `DM_CMD_RESET_MODE`, releasing
-all torque. Use it as a software e-stop or to hand-pose the arm.
+all torque. Use it as a software e-stop or to hand-pose the arm. The switch is a
+standalone `volatile uint8_t Arm_Disable_Enable` (default 0) declared in
+`Arm_Ctrl.h`, decoupled from `master_enable` and taking priority over it.
 
 - The arm may drop under gravity once torque is released — support it first.
 - Disabled motors stop feedback, so they read as offline/fault while disabled;
   this is expected and the state still reports `5` (disabled) with priority.
-- To recover, set `master_enable` back to `0` (or `1`). Each motor is
-  re-enabled, recaptures its current position, and resumes position mode with
-  no jump.
+- To recover, set `Arm_Disable_Enable` back to `0`. Each motor is re-enabled,
+  recaptures its current position, and resumes its `master_enable`/`axis_mode`
+  mode with no jump.
 
 Recommended first test:
 
@@ -46,7 +50,7 @@ Every transition captures the current position and ramps torque in over
 - `2`: mode transition ramp.
 - `3`: active gravity/impedance control.
 - `4`: degraded; at least one previously seen motor is offline.
-- `5`: disabled; all motors released via `master_enable = 0xFF`.
+- `5`: disabled; all motors released via `Arm_Disable_Enable = 1`.
 
 `Arm_Control_Debug.fault_mask` and `saturation_mask` use bit 0 through bit 5
 for J1 through J6 and bit 6 for the terminal motor where applicable.

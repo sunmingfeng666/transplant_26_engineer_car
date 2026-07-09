@@ -36,6 +36,15 @@ static uint8_t s_terminal_prev_online;
 static uint8_t s_clamp_close;
 static uint32_t s_last_retry_tick;
 
+/* 一键失能运行时开关：默认 0=正常，非 0=整臂失能。详见 Arm_Ctrl.h 说明。 */
+volatile uint8_t Arm_Disable_Enable = 0U;
+
+/* 是否处于失能状态。集中此处判断，取代散落各处的 master_enable==0xFF 魔数。 */
+static uint8_t Arm_IsDisabled(void)
+{
+    return Arm_Disable_Enable != 0U;
+}
+
 static float Arm_Clamp(float value, float min_value, float max_value)
 {
     if (!isfinite(value)) return 0.0f;
@@ -76,8 +85,8 @@ static uint8_t Arm_RequestedMode(uint8_t axis)
 {
     uint8_t mode;
 
-    /* 如果 master_enable == 0xFF，所有轴进入失能模式 */
-    if (Arm_Control_Config.master_enable == 0xFFU) {
+    /* 一键失能开关置位时，所有轴进入失能模式 */
+    if (Arm_IsDisabled()) {
         return ARM_MODE_DISABLED;
     }
 
@@ -292,7 +301,7 @@ void Engineer_Arm_Task(const Arm_Motor_Group_t *feedback,
     }
 
     /* 如果处于失能模式，末端夹爪也失能 */
-    if (Arm_Control_Config.master_enable == 0xFFU) {
+    if (Arm_IsDisabled()) {
         if (s_terminal_prev_online) {
             Motor_Mode(&hfdcan3, 0x07U, MIT_MODE, DM_CMD_RESET_MODE);
             s_terminal_prev_online = 0U;
@@ -319,7 +328,7 @@ void Engineer_Arm_Task(const Arm_Motor_Group_t *feedback,
     Arm_Control_Debug.fault_mask = fault_mask;
     Arm_Control_Debug.saturation_mask = saturation_mask;
 
-    if (Arm_Control_Config.master_enable == 0xFFU) Arm_Control_Debug.state = ARM_STATE_DISABLED;
+    if (Arm_IsDisabled()) Arm_Control_Debug.state = ARM_STATE_DISABLED;
     else if (s_target_valid_mask != 0x3FU) Arm_Control_Debug.state = ARM_STATE_WAIT_FEEDBACK;
     else if (fault_mask != 0U) Arm_Control_Debug.state = ARM_STATE_DEGRADED;
     else if (any_ramping) Arm_Control_Debug.state = ARM_STATE_MODE_RAMP;
