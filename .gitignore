@@ -2,3 +2,5 @@
 **/AGENTS.md
 **/CLAUDE.md
 docs/
+.claude/
+.idea/
