@@ -9,6 +9,7 @@ typedef enum {
     ARM_MODE_POSITION = 0,
     ARM_MODE_GRAVITY,
     ARM_MODE_GRAVITY_IMPEDANCE,
+    ARM_MODE_DISABLED,  // 失能模式
 } Arm_Control_Mode_e;
 
 typedef enum {
@@ -17,6 +18,7 @@ typedef enum {
     ARM_STATE_MODE_RAMP,
     ARM_STATE_ACTIVE,
     ARM_STATE_DEGRADED,
+    ARM_STATE_DISABLED,  // 所有电机失能
 } Arm_Control_State_e;
 
 typedef struct {

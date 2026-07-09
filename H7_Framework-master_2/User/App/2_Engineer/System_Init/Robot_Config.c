@@ -11,6 +11,7 @@
 #include "Robot_Config.h"
 #include "Comm_DualBoard.h"
 #include "Power_CAP.h"
+#include "Arm_MatlabDebug.h"
 
 Chassis_Motor_Group_t chassis_motors;
 Gimbal_Motor_Group_t  gimbal_motors;
@@ -22,7 +23,18 @@ BSP_PWM_t trigger_pwm = {&htim4, TIM_CHANNEL_2, PWM_CHANNEL_NORMAL};
 UART_RX_NODE(&huart5, 18, DBUS_RX_DATA, NULL, 18, &DBUS, DBUS_Resolved);
 OFFLINE_NODE(&DBUS.offline, DBUS_OFFLINE_TIME, GROUP_NONE);
 
-// UART7 预留为上位机 VOFA 波形发送口，不在本板注册接收协议。
+// ==========================================
+// UART7 公用上位机口（board2）
+//   发送：常驻，VOFA 波形/MATLAB 遥测共用（见 All_Task.c），不受联调开关控制。
+//   接收：仅当机械臂 MATLAB 联调编译开关打开时，才注册接收解析（MATLAB 下发关节角）。
+// ==========================================
+#if ARM_MATLAB_DEBUG_ENABLE
+// 变长 JustFloat 帧：expected_size=0 跳过定长校验，靠帧尾切分。
+// 缓冲区放 D2 RAM，H7 的 DMA1 无法访问 DTCM。
+static uint8_t Arm_MatlabDebug_Rx_Buf[2][ARM_MATLAB_DEBUG_RX_SIZE] __attribute__((section(".RAM_D2")));
+UART_RX_NODE(&huart7, 0, Arm_MatlabDebug_Rx_Buf[0], Arm_MatlabDebug_Rx_Buf[1],
+             ARM_MATLAB_DEBUG_RX_SIZE, NULL, Arm_MatlabDebug_Resolve);
+#endif
 
 // 遥控板 USART10 接收底盘板 USART10 回传的固定长度状态反馈帧。
 // 两个缓冲区放在 D2 RAM，因为 DMA 不能访问 H7 的所有内存区域。

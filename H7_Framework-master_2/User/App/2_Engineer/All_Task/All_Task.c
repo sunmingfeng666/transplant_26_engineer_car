@@ -15,6 +15,7 @@
 #include "../../../Device/Host_Comm/Vofa.h"
 #include "VT13.h"
 #include "Arm_Ctrl.h"
+#include "Arm_MatlabDebug.h"
 //指令中心任务 200Hz
 void Command_Task(void *argument)
 {
@@ -105,20 +106,33 @@ void Motor_Task(void *argument)
 
         Engineer_Arm_Task(&arm_m, &dbus_snap, 0.001f);
 
-        // UART7 -> VOFA JustFloat，20通道、100Hz；串口忙时底层直接丢帧。
+        // ==========================================
+        // UART7 遥测发送 @ 100Hz（board2 公用上位机口，常驻，不受联调开关控制）
+        //   用途：VOFA 看波形、MATLAB 3D 显示。
+        //   协议：JustFloat，115200 波特率；串口忙时底层直接丢帧，不阻塞 1kHz 电机控制任务。
+        //   帧布局：
+        //     ch0-5  = J1..J6 实际位置(rad)，MATLAB 取前 6 通道驱动 3D 模型。
+        //     ch6-17 = J2/J4/J5 的 target/vel/gravity/command 调试量，VOFA 看波形。
+        //     ch18   = 控制器状态（state）。
+        //     ch19   = 联调链路在线标志（无联调编译开关时恒 0）。
+        //   想看别的波形：直接改这一处 VOFA_JustFloat 的通道映射即可。
+        // ==========================================
         if (++vofa_divider >= 10U) {
             vofa_divider = 0U;
+#if ARM_MATLAB_DEBUG_ENABLE
+            float link_online = (float)Arm_MatlabDebug_IsOnline();
+#else
+            float link_online = 0.0f;  /* 比赛固件无联调模块，恒 0 */
+#endif
             VOFA_JustFloat(&huart7, 20,
-                Arm_Control_Debug.target[1], Arm_Control_Debug.position[1],
-                Arm_Control_Debug.velocity[1], Arm_Control_Debug.gravity_tau[1],
-                Arm_Control_Debug.impedance_tau[1], Arm_Control_Debug.command_tau[1],
-                Arm_Control_Debug.target[3], Arm_Control_Debug.position[3],
-                Arm_Control_Debug.velocity[3], Arm_Control_Debug.gravity_tau[3],
-                Arm_Control_Debug.impedance_tau[3], Arm_Control_Debug.command_tau[3],
-                Arm_Control_Debug.target[4], Arm_Control_Debug.position[4],
-                Arm_Control_Debug.velocity[4], Arm_Control_Debug.gravity_tau[4],
-                Arm_Control_Debug.impedance_tau[4], Arm_Control_Debug.command_tau[4],
-                (float)Arm_Control_Debug.state, (float)Arm_Control_Debug.fault_mask);
+                Arm_Control_Debug.position[0], Arm_Control_Debug.position[1],
+                Arm_Control_Debug.position[2], Arm_Control_Debug.position[3],
+                Arm_Control_Debug.position[4], Arm_Control_Debug.position[5],
+                Arm_Control_Debug.target[1], Arm_Control_Debug.target[3], Arm_Control_Debug.target[4],
+                Arm_Control_Debug.velocity[1], Arm_Control_Debug.velocity[3], Arm_Control_Debug.velocity[4],
+                Arm_Control_Debug.gravity_tau[1], Arm_Control_Debug.gravity_tau[3], Arm_Control_Debug.gravity_tau[4],
+                Arm_Control_Debug.command_tau[1], Arm_Control_Debug.command_tau[3], Arm_Control_Debug.command_tau[4],
+                (float)Arm_Control_Debug.state, link_online);
         }
     }
 }

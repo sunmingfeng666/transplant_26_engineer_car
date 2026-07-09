@@ -3,6 +3,7 @@
 #include <math.h>
 #include <string.h>
 
+#include "Arm_MatlabDebug.h"
 #include "DM_Motor.h"
 #include "fdcan.h"
 
@@ -75,6 +76,11 @@ static uint8_t Arm_RequestedMode(uint8_t axis)
 {
     uint8_t mode;
 
+    /* 如果 master_enable == 0xFF，所有轴进入失能模式 */
+    if (Arm_Control_Config.master_enable == 0xFFU) {
+        return ARM_MODE_DISABLED;
+    }
+
     if (!Arm_IsCompensatedAxis(axis) || Arm_Control_Config.master_enable == 0U) {
         return ARM_MODE_POSITION;
     }
@@ -86,6 +92,7 @@ static uint8_t Arm_RequestedMode(uint8_t axis)
 
 static uint16_t Arm_DmMode(uint8_t mode)
 {
+    if (mode == ARM_MODE_DISABLED) return 0xFFFFU;  /* 失能模式特殊标记 */
     return mode == ARM_MODE_POSITION ? POS_MODE : MIT_MODE;
 }
 
@@ -95,7 +102,18 @@ static void Arm_ConfigureAxis(uint8_t axis, uint8_t requested_mode)
     uint16_t id = Arm_GetMotorId(axis);
     uint16_t new_dm_mode = Arm_DmMode(requested_mode);
 
+    /* 如果请求失能模式，直接发送失能命令 */
+    if (requested_mode == ARM_MODE_DISABLED) {
+        Motor_Mode(bus, id, MIT_MODE, DM_CMD_RESET_MODE);
+        s_active_mode[axis] = ARM_MODE_DISABLED;
+        Arm_Control_Debug.ramp[axis] = 0.0f;
+        return;
+    }
+
+    /* 切换 DM 硬件模式前先复位旧模式；但失能模式(ARM_MODE_DISABLED)在硬件上
+     * 已等同复位状态，其 Arm_DmMode 为 0xFFFF 无效标记，不能用来构造 CAN ID，故跳过。 */
     if (s_active_mode[axis] != ARM_MODE_UNKNOWN &&
+        s_active_mode[axis] != ARM_MODE_DISABLED &&
         Arm_DmMode(s_active_mode[axis]) != new_dm_mode) {
         Motor_Mode(bus, id, Arm_DmMode(s_active_mode[axis]), DM_CMD_RESET_MODE);
     }
@@ -207,6 +225,17 @@ void Engineer_Arm_Task(const Arm_Motor_Group_t *feedback,
 
     Arm_UpdateDbusTarget(dbus, dt_s);
 
+#if ARM_MATLAB_DEBUG_ENABLE
+    /*
+     * MATLAB 联调（仅测试用）：使能且链路在线时覆盖 J2/J4/J5 目标，
+     * 覆盖后再钳一次限位保证安全；未使能/掉线则上面 DBUS 逻辑照常生效。
+     * 比赛固件编译开关关掉，本段代码从固件中消失。
+     */
+    if (Arm_MatlabDebug_ApplyTarget(s_target, ARM_JOINT_COUNT)) {
+        Arm_LimitTargets();
+    }
+#endif
+
     for (uint8_t axis = 0U; axis < ARM_JOINT_COUNT; axis++) {
         const DM_MOTOR_DATA_Typedef *motor = Arm_GetFeedback(feedback, axis);
         uint8_t mode = s_active_mode[axis];
@@ -215,6 +244,15 @@ void Engineer_Arm_Task(const Arm_Motor_Group_t *feedback,
         float command_tau = 0.0f;
 
         Arm_Control_Debug.target[axis] = s_target[axis];
+
+        /* 失能模式下不发送任何控制命令 */
+        if (mode == ARM_MODE_DISABLED) {
+            Arm_Control_Debug.gravity_tau[axis] = 0.0f;
+            Arm_Control_Debug.impedance_tau[axis] = 0.0f;
+            Arm_Control_Debug.command_tau[axis] = 0.0f;
+            continue;
+        }
+
         if ((online_mask & (1U << axis)) == 0U || mode == ARM_MODE_UNKNOWN) {
             Arm_Control_Debug.gravity_tau[axis] = 0.0f;
             Arm_Control_Debug.impedance_tau[axis] = 0.0f;
@@ -253,7 +291,13 @@ void Engineer_Arm_Task(const Arm_Motor_Group_t *feedback,
         Arm_Control_Debug.command_tau[axis] = command_tau;
     }
 
-    if (feedback->Terminal_3507.offline.is_online) {
+    /* 如果处于失能模式，末端夹爪也失能 */
+    if (Arm_Control_Config.master_enable == 0xFFU) {
+        if (s_terminal_prev_online) {
+            Motor_Mode(&hfdcan3, 0x07U, MIT_MODE, DM_CMD_RESET_MODE);
+            s_terminal_prev_online = 0U;
+        }
+    } else if (feedback->Terminal_3507.offline.is_online) {
         online_mask |= (uint16_t)(1U << 6);
         if (!s_terminal_prev_online) {
             Motor_Mode(&hfdcan3, 0x07U, MIT_MODE, DM_CMD_CLEAR_ERROR);
@@ -275,7 +319,8 @@ void Engineer_Arm_Task(const Arm_Motor_Group_t *feedback,
     Arm_Control_Debug.fault_mask = fault_mask;
     Arm_Control_Debug.saturation_mask = saturation_mask;
 
-    if (s_target_valid_mask != 0x3FU) Arm_Control_Debug.state = ARM_STATE_WAIT_FEEDBACK;
+    if (Arm_Control_Config.master_enable == 0xFFU) Arm_Control_Debug.state = ARM_STATE_DISABLED;
+    else if (s_target_valid_mask != 0x3FU) Arm_Control_Debug.state = ARM_STATE_WAIT_FEEDBACK;
     else if (fault_mask != 0U) Arm_Control_Debug.state = ARM_STATE_DEGRADED;
     else if (any_ramping) Arm_Control_Debug.state = ARM_STATE_MODE_RAMP;
     else if (any_active) Arm_Control_Debug.state = ARM_STATE_ACTIVE;
