@@ -1,190 +1,283 @@
-//
-// 工程机械臂控制实现（第一阶段：基础遥操作）
-// 移植自旧臂主控 DM_H7_Master（2）的 Move_Task.c。
-// 关键适配：
-//   1) 新框架 Pos_Speed_Ctrl/MIT_Ctrl 为传值接口（旧为传结构体指针）；
-//   2) FDCAN_Send_Msg 底层非阻塞，去掉旧代码每帧间的 osDelay(2)；
-//   3) 在线判断改用 Offline_Detector 的 offline.is_online。
-//
 #include "Arm_Ctrl.h"
+
 #include <math.h>
-#include "BSP_FDCAN.h"
+#include <string.h>
+
 #include "DM_Motor.h"
 #include "fdcan.h"
 
-// --- 关节限幅（弧度），沿用旧臂 Move_Task.c 的 Boundary 常量。⚠️ 换机械结构需重标 ---
-#define ARM_J2_MAX    3.67875862f
-#define ARM_J2_MIN   -0.532349f
-#define ARM_J4_MAX    1.848f
-#define ARM_J4_MIN   -1.8297427f
-#define ARM_J5_MAX    1.67410f
-#define ARM_J5_MIN   -1.76146317f
+#define ARM_AXIS_J1 0U
+#define ARM_AXIS_J2 1U
+#define ARM_AXIS_J3 2U
+#define ARM_AXIS_J4 3U
+#define ARM_AXIS_J5 4U
+#define ARM_AXIS_J6 5U
 
-// --- MIT 力位混合模式的每关节增益（⚠️ 必须按实车逐关节整定！）---
-// MIT 模式电机内部：力矩 = Kp*(目标位-当前位) + Kd*(目标速-当前速) + 前馈力矩。
-// 关节做位置控制必须给非零 Kp/Kd：Kp 太小→托不住臂自重会下坠；太大→抖动啸叫；
-// Kd 提供阻尼抑制振荡。取值范围见 DM_Motor.h：Kp 0~500，Kd 0~5。
-// 下面是保守起调值，务必先架起/托住机械臂逐个关节试，确认不塌不抖再撒手。
-// J1/J2 是 DM8009（肩部承重大，刚度需更高），J3/J4 DM4340，J5/J6 DM4310（腕部小）。
-#define ARM_KP_J1  30.0f
-#define ARM_KD_J1   1.5f
-#define ARM_KP_J2  30.0f
-#define ARM_KD_J2   1.5f
-#define ARM_KP_J3  20.0f
-#define ARM_KD_J3   1.0f
-#define ARM_KP_J4  20.0f
-#define ARM_KD_J4   1.0f
-#define ARM_KP_J5  10.0f
-#define ARM_KD_J5   0.8f
-#define ARM_KP_J6  10.0f
-#define ARM_KD_J6   0.8f
+#define ARM_J2_MIN (-0.532349f)
+#define ARM_J2_MAX ( 3.67875862f)
+#define ARM_J4_MIN (-1.8297427f)
+#define ARM_J4_MAX ( 1.848f)
+#define ARM_J5_MIN (-1.76146317f)
+#define ARM_J5_MAX ( 1.67410f)
 
-// --- 末端夹爪 MIT 力矩，沿用旧臂 Move_Task.c：闭合 +1.0 / 张开 -1.2 ---
-#define TERMINAL_TORQUE_CLOSE   1.0f
-#define TERMINAL_TORQUE_OPEN   -1.2f
+#define ARM_JOINT_SPEED           2.0f
+#define ARM_DBUS_STEP             0.00005f
+#define ARM_RETRY_PERIOD_MS       100U
+#define ARM_TERMINAL_CLOSE_TORQUE 1.0f
+#define ARM_TERMINAL_OPEN_TORQUE (-1.2f)
+#define ARM_MODE_UNKNOWN          0xFFU
 
-// --- 遥控增量步长，沿用旧臂 RUI_DBUS.c 手感（每通道 ±0.00005 rad/拍）---
-#define ARM_DBUS_STEP   0.00005f
+static float s_target[ARM_JOINT_COUNT];
+static uint8_t s_active_mode[ARM_JOINT_COUNT];
+static uint8_t s_prev_online[ARM_JOINT_COUNT];
+static uint8_t s_target_valid_mask;
+static uint8_t s_terminal_prev_online;
+static uint8_t s_clamp_close;
+static uint32_t s_last_retry_tick;
 
-// 上电缓抬标志：0=尚未缓抬到位，1=已就绪可正常控制（旧 power_on_arm 逻辑）
-static uint8_t s_power_on_arm = 0;
-
-// 6 个关节的目标位置（弧度）+ 末端夹爪开合（1=闭合,0=张开）
-static float   s_joint_target[6] = {0};
-static uint8_t s_clamp_close = 1;
-
-// 单关节上下限截断
-static float Clamp_f(float v, float min, float max)
+static float Arm_Clamp(float value, float min_value, float max_value)
 {
-    if (v < min) return min;
-    if (v > max) return max;
-    return v;
+    if (!isfinite(value)) return 0.0f;
+    if (value < min_value) return min_value;
+    if (value > max_value) return max_value;
+    return value;
 }
 
-/**
- * @brief 机械臂初始化：设置各关节位置速度模式的速度上限与末端初态。
- * @note  电机的使能/清错在 Task 里按在线状态动态处理，这里只初始化软件目标。
- */
+static const DM_MOTOR_DATA_Typedef *Arm_GetFeedback(const Arm_Motor_Group_t *feedback, uint8_t axis)
+{
+    switch (axis) {
+    case ARM_AXIS_J1: return &feedback->J1_8009;
+    case ARM_AXIS_J2: return &feedback->J2_8009;
+    case ARM_AXIS_J3: return &feedback->J3_4340;
+    case ARM_AXIS_J4: return &feedback->J4_4340;
+    case ARM_AXIS_J5: return &feedback->J5_4310;
+    case ARM_AXIS_J6: return &feedback->J6_4310;
+    default: return NULL;
+    }
+}
+
+static FDCAN_HandleTypeDef *Arm_GetBus(uint8_t axis)
+{
+    return axis <= ARM_AXIS_J3 ? &hfdcan2 : &hfdcan3;
+}
+
+static uint16_t Arm_GetMotorId(uint8_t axis)
+{
+    return (uint16_t)(axis + 1U);
+}
+
+static uint8_t Arm_IsCompensatedAxis(uint8_t axis)
+{
+    return axis == ARM_AXIS_J2 || axis == ARM_AXIS_J4 || axis == ARM_AXIS_J5;
+}
+
+static uint8_t Arm_RequestedMode(uint8_t axis)
+{
+    uint8_t mode;
+
+    if (!Arm_IsCompensatedAxis(axis) || Arm_Control_Config.master_enable == 0U) {
+        return ARM_MODE_POSITION;
+    }
+
+    mode = Arm_Control_Config.axis_mode[axis];
+    if (mode > ARM_MODE_GRAVITY_IMPEDANCE) return ARM_MODE_POSITION;
+    return mode;
+}
+
+static uint16_t Arm_DmMode(uint8_t mode)
+{
+    return mode == ARM_MODE_POSITION ? POS_MODE : MIT_MODE;
+}
+
+static void Arm_ConfigureAxis(uint8_t axis, uint8_t requested_mode)
+{
+    FDCAN_HandleTypeDef *bus = Arm_GetBus(axis);
+    uint16_t id = Arm_GetMotorId(axis);
+    uint16_t new_dm_mode = Arm_DmMode(requested_mode);
+
+    if (s_active_mode[axis] != ARM_MODE_UNKNOWN &&
+        Arm_DmMode(s_active_mode[axis]) != new_dm_mode) {
+        Motor_Mode(bus, id, Arm_DmMode(s_active_mode[axis]), DM_CMD_RESET_MODE);
+    }
+    Motor_Mode(bus, id, new_dm_mode, DM_CMD_CLEAR_ERROR);
+    Motor_Mode(bus, id, new_dm_mode, DM_CMD_MOTOR_MODE);
+    s_active_mode[axis] = requested_mode;
+    Arm_Control_Debug.ramp[axis] = requested_mode == ARM_MODE_POSITION ? 1.0f : 0.0f;
+}
+
+static void Arm_LimitTargets(void)
+{
+    s_target[ARM_AXIS_J1] = Arm_Clamp(s_target[ARM_AXIS_J1], P_MIN, P_MAX);
+    s_target[ARM_AXIS_J2] = Arm_Clamp(s_target[ARM_AXIS_J2], ARM_J2_MIN, ARM_J2_MAX);
+    s_target[ARM_AXIS_J3] = Arm_Clamp(s_target[ARM_AXIS_J3], P_MIN, P_MAX);
+    s_target[ARM_AXIS_J4] = Arm_Clamp(s_target[ARM_AXIS_J4], ARM_J4_MIN, ARM_J4_MAX);
+    s_target[ARM_AXIS_J5] = Arm_Clamp(s_target[ARM_AXIS_J5], ARM_J5_MIN, ARM_J5_MAX);
+    s_target[ARM_AXIS_J6] = Arm_Clamp(s_target[ARM_AXIS_J6], P_MIN, P_MAX);
+}
+
+static void Arm_UpdateDbusTarget(const DBUS_Typedef *dbus, float dt_s)
+{
+    float step_scale;
+
+    if (dbus == NULL || !dbus->offline.is_online) return;
+    step_scale = Arm_Clamp(dt_s, 0.0f, 0.01f) / 0.001f;
+
+    if (dbus->Remote.S1 == 1U) {
+        s_target[ARM_AXIS_J1] -= (float)dbus->Remote.CH0 * ARM_DBUS_STEP * step_scale;
+        s_target[ARM_AXIS_J2] += (float)dbus->Remote.CH1 * ARM_DBUS_STEP * step_scale;
+        s_target[ARM_AXIS_J3] += (float)dbus->Remote.CH2 * ARM_DBUS_STEP * step_scale;
+        s_target[ARM_AXIS_J4] += (float)dbus->Remote.CH3 * ARM_DBUS_STEP * step_scale;
+    } else if (dbus->Remote.S1 == 2U) {
+        s_target[ARM_AXIS_J5] += (float)dbus->Remote.CH0 * ARM_DBUS_STEP * step_scale;
+        s_target[ARM_AXIS_J6] += (float)dbus->Remote.CH1 * ARM_DBUS_STEP * step_scale;
+    }
+
+    if (dbus->Remote.S2 == 1U) s_clamp_close = 1U;
+    else if (dbus->Remote.S2 == 2U) s_clamp_close = 0U;
+    Arm_LimitTargets();
+}
+
 uint8_t Engineer_Arm_Init(void)
 {
-    s_power_on_arm = 0;
-    s_clamp_close  = 1;               // 上电默认夹爪闭合，与旧臂 All_Init 一致
-    for (int i = 0; i < 6; i++) {
-        s_joint_target[i] = 0.0f;
+    memset(s_target, 0, sizeof(s_target));
+    memset(s_prev_online, 0, sizeof(s_prev_online));
+    memset((void *)&Arm_Control_Debug, 0, sizeof(Arm_Control_Debug));
+    for (uint8_t axis = 0U; axis < ARM_JOINT_COUNT; axis++) {
+        s_active_mode[axis] = ARM_MODE_UNKNOWN;
     }
-    return 0;
+    s_target_valid_mask = 0U;
+    s_terminal_prev_online = 0U;
+    s_clamp_close = 1U;
+    s_last_retry_tick = 0U;
+    Arm_Control_Debug.state = ARM_STATE_WAIT_FEEDBACK;
+    return 0U;
 }
 
-/**
- * @brief 遥控输入 → 关节目标增量映射（沿用旧臂 RUI_DBUS.c / VT13.c 手感）。
- * @note  6关节 > 4摇杆通道，故用档位开关分两组：
- *        DBUS S1=上(1)：CH0→J1(反向) CH1→J2 CH2→J3 CH3→J4
- *        DBUS S1=下(2)：CH0→J5      CH1→J6
- *        DBUS S2=上→夹爪闭合，S2=下→夹爪张开
- *        VT13 摇杆/拨轮同时叠加增量，pause 键切换夹爪。
- */
-static void Arm_Input_Update(const DBUS_Typedef *dbus, const VT13_Typedef *vt13)
+void Engineer_Arm_Task(const Arm_Motor_Group_t *feedback,
+                       const DBUS_Typedef *dbus,
+                       float dt_s)
 {
-    // ---- DBUS：按 S1 档位选择关节组，增量叠加 ----
-    if (dbus != NULL && dbus->offline.is_online) {
-        if (dbus->Remote.S1 == 1) {            // 上档：J1~J4
-            s_joint_target[0] += (float)dbus->Remote.CH0 * -ARM_DBUS_STEP;
-            s_joint_target[1] += (float)dbus->Remote.CH1 *  ARM_DBUS_STEP;
-            s_joint_target[2] += (float)dbus->Remote.CH2 *  ARM_DBUS_STEP;
-            s_joint_target[3] += (float)dbus->Remote.CH3 *  ARM_DBUS_STEP;
-        } else if (dbus->Remote.S1 == 2) {     // 下档：J5~J6
-            s_joint_target[4] += (float)dbus->Remote.CH0 * ARM_DBUS_STEP;
-            s_joint_target[5] += (float)dbus->Remote.CH1 * ARM_DBUS_STEP;
+    uint16_t online_mask = 0U;
+    uint16_t fault_mask = 0U;
+    uint16_t saturation_mask = 0U;
+    uint8_t any_active = 0U;
+    uint8_t any_ramping = 0U;
+    uint8_t retry_due;
+    uint32_t now;
+
+    if (feedback == NULL) return;
+    dt_s = Arm_Clamp(dt_s, 0.0001f, 0.01f);
+    now = HAL_GetTick();
+    retry_due = (now - s_last_retry_tick) >= ARM_RETRY_PERIOD_MS;
+    Arm_Control_Debug.remote_online = (dbus != NULL && dbus->offline.is_online) ? 1U : 0U;
+
+    for (uint8_t axis = 0U; axis < ARM_JOINT_COUNT; axis++) {
+        const DM_MOTOR_DATA_Typedef *motor = Arm_GetFeedback(feedback, axis);
+        uint8_t requested_mode = Arm_RequestedMode(axis);
+        uint8_t online = motor->offline.is_online && isfinite(motor->pos) &&
+                         isfinite(motor->vel) && isfinite(motor->tor);
+
+        Arm_Control_Debug.position[axis] = motor->pos;
+        Arm_Control_Debug.velocity[axis] = motor->vel;
+
+        if (!online) {
+            fault_mask |= (uint16_t)(1U << axis);
+            s_prev_online[axis] = 0U;
+            if (retry_due) {
+                Arm_ConfigureAxis(axis, requested_mode);
+            }
+            continue;
         }
-        if (dbus->Remote.S2 == 1)      s_clamp_close = 1; // 上：闭合
-        else if (dbus->Remote.S2 == 2) s_clamp_close = 0; // 下：张开
-    }
 
-    // ---- VT13 图传遥控：摇杆/拨轮增量叠加，pause 切夹爪 ----
-    if (vt13 != NULL && vt13->offline.is_online) {
-        s_joint_target[0] += (float)vt13->Remote.Channel[0] * -ARM_DBUS_STEP;
-        s_joint_target[1] += (float)vt13->Remote.Channel[1] *  ARM_DBUS_STEP;
-        s_joint_target[2] += (float)vt13->Remote.Channel[3] *  ARM_DBUS_STEP;
-        s_joint_target[3] += (float)vt13->Remote.Channel[2] *  ARM_DBUS_STEP;
-        s_joint_target[5] += (float)vt13->Remote.wheel      *  ARM_DBUS_STEP;
-        s_joint_target[4] += (float)vt13->Remote.fn_1 * 0.005f - (float)vt13->Remote.fn_2 * 0.005f;
-        if (vt13->Remote.pause == 1) s_clamp_close = 0; else s_clamp_close = 1;
-    }
-
-    // ---- 关节限幅（沿用旧 Motion_limitation 的 J2/J4/J5 边界）----
-    s_joint_target[1] = Clamp_f(s_joint_target[1], ARM_J2_MIN, ARM_J2_MAX);
-    s_joint_target[3] = Clamp_f(s_joint_target[3], ARM_J4_MIN, ARM_J4_MAX);
-    s_joint_target[4] = Clamp_f(s_joint_target[4], ARM_J5_MIN, ARM_J5_MAX);
-}
-
-// 单关节电机：若离线则清错并重新使能（旧代码在 ONLINE_JUDGE_TIME==0 时做同样的事）。
-// hcan 发送句柄，id 为电机 base id（0x01~0x07），mode 为 POS_MODE/MIT_MODE。
-// 返回 1 表示当前在线，0 表示离线（本拍已尝试重连）。
-static uint8_t Arm_Motor_Keepalive(FDCAN_HandleTypeDef *hcan, uint16_t id,
-                                   uint16_t mode, const DM_MOTOR_DATA_Typedef *m)
-{
-    if (!m->offline.is_online) {
-        Motor_Mode(hcan, id, mode, DM_CMD_CLEAR_ERROR);
-        Motor_Mode(hcan, id, mode, DM_CMD_MOTOR_MODE);
-        return 0;
-    }
-    return 1;
-}
-
-/**
- * @brief 机械臂主控制任务，由 Motor_Task 以 1kHz 调用。
- * @param a_motor 机械臂电机反馈组（只读）
- * @param dbus    DBUS 遥控快照（只读，可为 NULL）
- * @param vt13    VT13 图传遥控快照（只读，可为 NULL）
- * @note  无 osDelay：FDCAN 底层非阻塞，所有发送在 1ms 内完成。
- */
-void Engineer_Arm_Task(const Arm_Motor_Group_t *a_motor, const DBUS_Typedef *dbus, const VT13_Typedef *vt13)
-{
-    if (a_motor == NULL) return;
-
-    // ---- 上电缓抬：等 J2 反馈位置回到接近零位再放行正常控制，防止上电瞬间冲击 ----
-    if (s_power_on_arm == 0) {
-
-        if (fabsf(a_motor->J2_8009.pos) < 0.1f) {
-            s_power_on_arm = 1;
-            // 目标初始化为当前反馈位置，避免放行瞬间跳变
-            s_joint_target[0] = a_motor->J1_8009.pos;
-            s_joint_target[1] = a_motor->J2_8009.pos;
-            s_joint_target[2] = a_motor->J3_4340.pos;
-            s_joint_target[3] = a_motor->J4_4340.pos;
-            s_joint_target[4] = a_motor->J5_4310.pos;
-            s_joint_target[5] = a_motor->J6_4310.pos;
+        online_mask |= (uint16_t)(1U << axis);
+        if (!s_prev_online[axis]) {
+            s_target[axis] = motor->pos;
+            s_target_valid_mask |= (uint8_t)(1U << axis);
+            Arm_ConfigureAxis(axis, requested_mode);
+            s_prev_online[axis] = 1U;
+        } else if (s_active_mode[axis] != requested_mode) {
+            s_target[axis] = motor->pos;
+            Arm_ConfigureAxis(axis, requested_mode);
         }
-        return; // 未就绪不发控制帧
     }
 
-    // ---- 遥控输入 → 关节目标（含限幅）----
-    Arm_Input_Update(dbus, vt13);
+    if (retry_due) {
+        s_last_retry_tick = now;
+    }
 
-    // ---- 电机保活：离线的关节清错重使能，全部在线才允许下发控制帧 ----
-    // 使能模式必须与下发控制帧的模式一致：现在 7 个电机全部用 MIT_MODE。
-    uint8_t all_online = 1;
-    all_online &= Arm_Motor_Keepalive(&hfdcan2, 0x01, MIT_MODE, &a_motor->J1_8009);
-    all_online &= Arm_Motor_Keepalive(&hfdcan2, 0x02, MIT_MODE, &a_motor->J2_8009);
-    all_online &= Arm_Motor_Keepalive(&hfdcan2, 0x03, MIT_MODE, &a_motor->J3_4340);
-    all_online &= Arm_Motor_Keepalive(&hfdcan3, 0x04, MIT_MODE, &a_motor->J4_4340);
-    all_online &= Arm_Motor_Keepalive(&hfdcan3, 0x05, MIT_MODE, &a_motor->J5_4310);
-    all_online &= Arm_Motor_Keepalive(&hfdcan3, 0x06, MIT_MODE, &a_motor->J6_4310);
-    all_online &= Arm_Motor_Keepalive(&hfdcan3, 0x07, MIT_MODE, &a_motor->Terminal_3507);
+    Arm_UpdateDbusTarget(dbus, dt_s);
 
-    if (!all_online) return;
+    for (uint8_t axis = 0U; axis < ARM_JOINT_COUNT; axis++) {
+        const DM_MOTOR_DATA_Typedef *motor = Arm_GetFeedback(feedback, axis);
+        uint8_t mode = s_active_mode[axis];
+        float gravity_tau = 0.0f;
+        float impedance_tau = 0.0f;
+        float command_tau = 0.0f;
 
-    // ---- 下发控制帧：J1~J6 全部 MIT 力位混合模式，末端夹爪 MIT 纯力矩模式 ----
-    // MIT_Ctrl(总线, ID, 目标位置, 目标速度, Kp, Kd, 前馈力矩)。
-    // 关节做位置保持：目标速度给 0（不主动带速）、前馈力矩给 0（全靠 Kp/Kd 闭环）。
-    MIT_Ctrl(&hfdcan2, 0x01, s_joint_target[0], 0.0f, ARM_KP_J1, ARM_KD_J1, 0.0f);
-    MIT_Ctrl(&hfdcan2, 0x02, s_joint_target[1], 0.0f, ARM_KP_J2, ARM_KD_J2, 0.0f);
-    MIT_Ctrl(&hfdcan2, 0x03, s_joint_target[2], 0.0f, ARM_KP_J3, ARM_KD_J3, 0.0f);
-    MIT_Ctrl(&hfdcan3, 0x04, s_joint_target[3], 0.0f, ARM_KP_J4, ARM_KD_J4, 0.0f);
-    MIT_Ctrl(&hfdcan3, 0x05, s_joint_target[4], 0.0f, ARM_KP_J5, ARM_KD_J5, 0.0f);
-    MIT_Ctrl(&hfdcan3, 0x06, s_joint_target[5], 0.0f, ARM_KP_J6, ARM_KD_J6, 0.0f);
+        Arm_Control_Debug.target[axis] = s_target[axis];
+        if ((online_mask & (1U << axis)) == 0U || mode == ARM_MODE_UNKNOWN) {
+            Arm_Control_Debug.gravity_tau[axis] = 0.0f;
+            Arm_Control_Debug.impedance_tau[axis] = 0.0f;
+            Arm_Control_Debug.command_tau[axis] = 0.0f;
+            continue;
+        }
 
-    // 末端夹爪：Kp/Kd 给 0，只靠前馈力矩输出恒定夹持力（闭合正、张开负）。
-    float terminal_torque = s_clamp_close ? TERMINAL_TORQUE_CLOSE : TERMINAL_TORQUE_OPEN;
-    MIT_Ctrl(&hfdcan3, 0x07, 0.0f, 0.0f, 0.0f, 0.0f, terminal_torque);
+        if (mode == ARM_MODE_POSITION) {
+            Pos_Speed_Ctrl(Arm_GetBus(axis), Arm_GetMotorId(axis), s_target[axis], ARM_JOINT_SPEED);
+        } else {
+            float ramp_time = Arm_Clamp(Arm_Control_Config.ramp_time_s, 0.1f, 5.0f);
+            uint8_t saturated = 0U;
+
+            if (ramp_time < 0.1f) ramp_time = 0.1f;
+            any_active = 1U;
+            Arm_Control_Debug.ramp[axis] += dt_s / ramp_time;
+            if (Arm_Control_Debug.ramp[axis] < 1.0f) any_ramping = 1U;
+            else Arm_Control_Debug.ramp[axis] = 1.0f;
+
+            gravity_tau = Arm_JointController_Gravity(
+                axis, feedback->J2_8009.pos, feedback->J4_4340.pos, feedback->J5_4310.pos);
+            if (mode == ARM_MODE_GRAVITY_IMPEDANCE) {
+                impedance_tau = Arm_JointController_Impedance(
+                    axis, s_target[axis], motor->pos, motor->vel);
+            }
+            command_tau = (gravity_tau + impedance_tau) * Arm_Control_Debug.ramp[axis];
+            command_tau = Arm_JointController_LimitTorque(axis, command_tau, &saturated);
+            if (saturated) saturation_mask |= (uint16_t)(1U << axis);
+
+            MIT_Ctrl(Arm_GetBus(axis), Arm_GetMotorId(axis),
+                     s_target[axis], 0.0f, 0.0f, 0.0f, command_tau);
+        }
+
+        Arm_Control_Debug.gravity_tau[axis] = gravity_tau;
+        Arm_Control_Debug.impedance_tau[axis] = impedance_tau;
+        Arm_Control_Debug.command_tau[axis] = command_tau;
+    }
+
+    if (feedback->Terminal_3507.offline.is_online) {
+        online_mask |= (uint16_t)(1U << 6);
+        if (!s_terminal_prev_online) {
+            Motor_Mode(&hfdcan3, 0x07U, MIT_MODE, DM_CMD_CLEAR_ERROR);
+            Motor_Mode(&hfdcan3, 0x07U, MIT_MODE, DM_CMD_MOTOR_MODE);
+            s_terminal_prev_online = 1U;
+        }
+        MIT_Ctrl(&hfdcan3, 0x07U, 0.0f, 0.0f, 0.0f, 0.0f,
+                 s_clamp_close ? ARM_TERMINAL_CLOSE_TORQUE : ARM_TERMINAL_OPEN_TORQUE);
+    } else {
+        fault_mask |= (uint16_t)(1U << 6);
+        s_terminal_prev_online = 0U;
+        if (retry_due) {
+            Motor_Mode(&hfdcan3, 0x07U, MIT_MODE, DM_CMD_CLEAR_ERROR);
+            Motor_Mode(&hfdcan3, 0x07U, MIT_MODE, DM_CMD_MOTOR_MODE);
+        }
+    }
+
+    Arm_Control_Debug.online_mask = online_mask;
+    Arm_Control_Debug.fault_mask = fault_mask;
+    Arm_Control_Debug.saturation_mask = saturation_mask;
+
+    if (s_target_valid_mask != 0x3FU) Arm_Control_Debug.state = ARM_STATE_WAIT_FEEDBACK;
+    else if (fault_mask != 0U) Arm_Control_Debug.state = ARM_STATE_DEGRADED;
+    else if (any_ramping) Arm_Control_Debug.state = ARM_STATE_MODE_RAMP;
+    else if (any_active) Arm_Control_Debug.state = ARM_STATE_ACTIVE;
+    else Arm_Control_Debug.state = ARM_STATE_POSITION_HOLD;
 }

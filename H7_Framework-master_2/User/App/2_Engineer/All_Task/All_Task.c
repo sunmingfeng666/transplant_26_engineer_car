@@ -68,7 +68,6 @@ static Gimbal_Motor_Group_t gimbal_m = {0};
 static Shoot_Motor_Group_t shoot_m = {0};
 static Arm_Motor_Group_t arm_m = {0};
 static DBUS_Typedef dbus_snap = {0};
-static VT13_Typedef vt13_snap = {0};
 void Motor_Task(void *argument)
 {
     (void)argument;
@@ -81,7 +80,7 @@ void Motor_Task(void *argument)
     Subscriber_t *s_motor_sub = NULL;
     Subscriber_t *a_motor_sub = NULL;
     Subscriber_t *dbus_sub = NULL;
-    Subscriber_t *vt13_sub = NULL;
+    uint8_t vofa_divider = 0U;
 
     imu_sub = SubRegister("imu_data", sizeof(IMU_Data_t));
     c_motor_sub = SubRegister("chassis_motors", sizeof(Chassis_Motor_Group_t));
@@ -89,9 +88,8 @@ void Motor_Task(void *argument)
     s_motor_sub = SubRegister("shoot_motors", sizeof(Shoot_Motor_Group_t));
     a_motor_sub = SubRegister("arm_motors", sizeof(Arm_Motor_Group_t));
     dbus_sub = SubRegister("dbus_data", sizeof(DBUS_Typedef));
-    vt13_sub = SubRegister("vt13_data", sizeof(VT13_Typedef));
 
-    // 机械臂控制初始化（第一版：基础遥操作）。
+    // 机械臂控制初始化：默认位置保持，重力/阻抗需通过调试结构逐轴开启。
     Engineer_Arm_Init();
 
     for(;;)
@@ -104,10 +102,24 @@ void Motor_Task(void *argument)
         if (s_motor_sub)  SubGetMessage(s_motor_sub, &shoot_m);
         if (a_motor_sub) SubGetMessage(a_motor_sub, &arm_m);
         if (dbus_sub) SubGetMessage(dbus_sub, &dbus_snap);
-        if (vt13_sub) SubGetMessage(vt13_sub, &vt13_snap);
 
-        // 机械臂电机输出路径：DBUS/VT13 遥控 → 7 个达妙关节/夹爪。
-        Engineer_Arm_Task(&arm_m, &dbus_snap, &vt13_snap);
+        Engineer_Arm_Task(&arm_m, &dbus_snap, 0.001f);
+
+        // UART7 -> VOFA JustFloat，20通道、100Hz；串口忙时底层直接丢帧。
+        if (++vofa_divider >= 10U) {
+            vofa_divider = 0U;
+            VOFA_JustFloat(&huart7, 20,
+                Arm_Control_Debug.target[1], Arm_Control_Debug.position[1],
+                Arm_Control_Debug.velocity[1], Arm_Control_Debug.gravity_tau[1],
+                Arm_Control_Debug.impedance_tau[1], Arm_Control_Debug.command_tau[1],
+                Arm_Control_Debug.target[3], Arm_Control_Debug.position[3],
+                Arm_Control_Debug.velocity[3], Arm_Control_Debug.gravity_tau[3],
+                Arm_Control_Debug.impedance_tau[3], Arm_Control_Debug.command_tau[3],
+                Arm_Control_Debug.target[4], Arm_Control_Debug.position[4],
+                Arm_Control_Debug.velocity[4], Arm_Control_Debug.gravity_tau[4],
+                Arm_Control_Debug.impedance_tau[4], Arm_Control_Debug.command_tau[4],
+                (float)Arm_Control_Debug.state, (float)Arm_Control_Debug.fault_mask);
+        }
     }
 }
 
@@ -120,6 +132,5 @@ void MY_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim) {
         Offline_Monitor();
         System_State_Update();
         System_Indicator_Ticks();
-        VOFA_JustFloat(NULL, 5, 0.0f, 1.0f,2.0f);
     }
 }

@@ -125,7 +125,10 @@ float Hex_To_Float(uint32_t *Byte,int num)// 十六进制到浮点数
 **/
 int float_to_uint(float x_float, float x_min, float x_max, int bits)
 {
-  /* Converts a float to an unsigned int, given range and number of bits */
+  /* 编码前钳位，避免MIT参数超范围后发生整数回绕。 */
+  if (!isfinite(x_float)) x_float = 0.0f;
+  if (x_float < x_min) x_float = x_min;
+  if (x_float > x_max) x_float = x_max;
   float span = x_max - x_min;
   float offset = x_min;
   return (int) ((x_float-offset)*((float)((1<<bits)-1))/span);
