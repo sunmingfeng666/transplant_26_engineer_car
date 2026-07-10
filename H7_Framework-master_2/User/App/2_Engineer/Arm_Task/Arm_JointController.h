@@ -3,12 +3,16 @@
 
 #include <stdint.h>
 
+#include "Arm_Joint_Algorithm.h"
+
 #define ARM_JOINT_COUNT 6U
 
 typedef enum {
     ARM_MODE_POSITION = 0,
+    ARM_MODE_MIT,
     ARM_MODE_GRAVITY,
     ARM_MODE_GRAVITY_IMPEDANCE,
+    ARM_MODE_DISABLED,
 } Arm_Control_Mode_e;
 
 typedef enum {
@@ -17,27 +21,17 @@ typedef enum {
     ARM_STATE_MODE_RAMP,
     ARM_STATE_ACTIVE,
     ARM_STATE_DEGRADED,
+    ARM_STATE_DISABLED,
 } Arm_Control_State_e;
 
 typedef struct {
-    volatile float a;
-    volatile float b;
-    volatile float c;
-    volatile float d;
-    volatile float e;
-    volatile float f;
-    volatile float g;
-    volatile float min_rad;
-    volatile float max_rad;
-} Arm_Gravity_Model_t;
-
-typedef struct {
-    /* 总开关默认关闭；调试时先设置单轴模式，再打开总开关。 */
     volatile uint8_t master_enable;
     volatile uint8_t axis_mode[ARM_JOINT_COUNT];
     volatile float gravity_scale[ARM_JOINT_COUNT];
     volatile float impedance_kp[ARM_JOINT_COUNT];
+    volatile float impedance_ki[ARM_JOINT_COUNT];
     volatile float impedance_kd[ARM_JOINT_COUNT];
+    volatile float impedance_i_limit[ARM_JOINT_COUNT];
     volatile float torque_limit[ARM_JOINT_COUNT];
     volatile float ramp_time_s;
     Arm_Gravity_Model_t gravity[ARM_JOINT_COUNT];
