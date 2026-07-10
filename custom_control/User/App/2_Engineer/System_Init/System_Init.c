@@ -6,7 +6,7 @@
 #include "BSP_DWT.h"
 #include "BSP_FDCAN.h"
 #include "WS2812.h"
-#include "BMI088driver.h"
+#include "BMI088.h"
 #include "BSP_TIM.h"
 #include "BSP_UART.h"
 #include "Buzzer.h"
@@ -14,6 +14,7 @@
 #include "Robot_Cmd.h"
 #include "Robot_Config.h"
 #include "System_Indicator.h"
+#include "Arm_Ctrl.h"
 
 uint32_t stm32_id[3];
 void Get_UID(uint32_t *uid) {
@@ -50,10 +51,11 @@ void System_Init() {
     BSP_PWM_Start(&imu_heater_pwm);
     //BSP_PWM_Start(&ws2812_pwm);
     //BMI088初始化
-    BMI088_init();
+    BMI088_Init();
     //系统状态监测初始化
     System_Indicator_Init();
     System_State_Init();
     //指令中心初始化
+    Arm_Ctrl_Init();
     Robot_Cmd_Init();
 }

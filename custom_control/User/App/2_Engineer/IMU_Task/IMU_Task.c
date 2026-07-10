@@ -8,7 +8,7 @@
 #include "IMU_Task.h"
 #include <math.h>
 
-#include "BMI088driver.h"
+//#include "BMI088driver.h"
 #include "BSP_TIM.h"
 #include "Message_Center.h"
 #include "System_State.h"
@@ -96,7 +96,7 @@ void IMU_Temp_Control_Init(void)
 void IMU_Update_Task(IMU_Data_t *IMU,float dt_s)
 {
     float now_temp = IMU->temp;
-    BMI088_read(IMU->gyro, IMU->accel, &IMU->temp);
+    //BMI088_read(IMU->gyro, IMU->accel, &IMU->temp);
     IMU_Status_Check(IMU);// 监测IMU数据，若不正常则进入错误状态
     if (imu_ctrl_state != TEMP_INIT)
     {
@@ -219,7 +219,7 @@ void IMU_Update_Task(IMU_Data_t *IMU,float dt_s)
             break;
         case ERROR_STATE:
             System_State_Report(ID_IMU,STATUS_ERROR);
-            if (BMI088_init() == 1) // 尝试重新初始化IMU，成功则认为错误已恢复
+            //if (BMI088_init() == 1) // 尝试重新初始化IMU，成功则认为错误已恢复
             {
                 imu_ctrl_state = TEMP_INIT; // 成功则回到初始状态
                 break;

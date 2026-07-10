@@ -7,11 +7,8 @@
 #include "DBUS.h"
 #include "Aim_Vision.h"
 #include "All_define.h"
-#include "BSP_UART.h"
 #include "Horizon_MATH.h"
-#include "Comm_DualBoard.h"
 #include "Referee.h"
-#include "usart.h"
 #include "VT13.h"
 
 #define PITCH_MAX              25.0f
@@ -46,13 +43,10 @@ static Chassis_Cmd_t chassis_cmd = {0};
 static Gimbal_Cmd_t gimbal_cmd = {0};
 static Shoot_Cmd_t shoot_cmd = {0};
 
-extern B2B_Tx_t Tx_Data;
-
 // --- 私有函数声明 ---
 static void Cmd_Handle_Safe_Mode(void);
 static void Cmd_Update_Remote_Ctrl(void);
 static void Cmd_Update_Mouse_Key(void);
-static void Cmd_DualBoard_Sync(void);
 
 
 void Robot_Cmd_Init(void)
@@ -91,8 +85,7 @@ void Robot_Cmd_Update(void)
     PubPushMessage(gimbal_cmd_pub, &gimbal_cmd);
     PubPushMessage(shoot_cmd_pub, &shoot_cmd);
 
-    // 双板通信
-    Cmd_DualBoard_Sync();
+    // 第一阶段只调通本板机械臂电机，不向车上板/自定义控制器回传控制数据。
 }
 
 /**
@@ -157,11 +150,3 @@ static void Cmd_Update_Mouse_Key(void)
 
 }
 
-/**
- * @brief 双板数据同步逻辑
- */
-static void Cmd_DualBoard_Sync(void)
-{
-
-    DualBoard_Send(LINK_CAN, &Tx_Data, sizeof(B2B_Tx_t));
-}
