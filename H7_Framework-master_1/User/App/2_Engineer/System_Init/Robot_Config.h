@@ -31,9 +31,15 @@ typedef struct __attribute__((aligned(4))){
     DJI_MOTOR_DATA_Typedef DJI_2006_bo;
 } Shoot_Motor_Group_t;
 
+typedef struct __attribute__((aligned(4))){
+    DJI_MOTOR_DATA_Typedef DJI_2006_Lift;
+    DJI_MOTOR_DATA_Typedef DJI_2006_Transverse;
+} Picture_Motor_Group_t;
+
 extern Chassis_Motor_Group_t chassis_motors;
 extern Gimbal_Motor_Group_t  gimbal_motors;
 extern Shoot_Motor_Group_t   shoot_motors;
+extern Picture_Motor_Group_t picture_motors;
 
 extern BSP_PWM_t imu_heater_pwm;
 extern BSP_PWM_t trigger_pwm;

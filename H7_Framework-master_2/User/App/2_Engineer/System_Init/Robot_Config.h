@@ -58,5 +58,7 @@ extern Arm_Motor_Group_t     arm_motors;
 
 extern BSP_PWM_t imu_heater_pwm;
 extern BSP_PWM_t trigger_pwm;
+extern BSP_PWM_t picture_yaw_pwm;
+extern BSP_PWM_t picture_pitch_pwm;
 
 #endif //H7_FRAMEWORK_ROBOT_CONFIG_H

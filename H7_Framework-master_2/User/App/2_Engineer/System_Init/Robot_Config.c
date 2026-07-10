@@ -19,6 +19,8 @@ Shoot_Motor_Group_t   shoot_motors;
 Arm_Motor_Group_t     arm_motors;
 
 BSP_PWM_t trigger_pwm = {&htim4, TIM_CHANNEL_2, PWM_CHANNEL_NORMAL};
+BSP_PWM_t picture_yaw_pwm = {&htim2, TIM_CHANNEL_1, PWM_CHANNEL_NORMAL};
+BSP_PWM_t picture_pitch_pwm = {&htim2, TIM_CHANNEL_3, PWM_CHANNEL_NORMAL};
 
 UART_RX_NODE(&huart5, 18, DBUS_RX_DATA, NULL, 18, &DBUS, DBUS_Resolved);
 OFFLINE_NODE(&DBUS.offline, DBUS_OFFLINE_TIME, GROUP_NONE);
