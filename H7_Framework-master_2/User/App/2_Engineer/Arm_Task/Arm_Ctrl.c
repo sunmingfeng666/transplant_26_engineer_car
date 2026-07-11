@@ -4,6 +4,7 @@
 #include <string.h>
 
 #include "Classic_Control.h"
+#include "Arm_OneClick.h"
 #include "DM_Motor.h"
 #include "Arm_MatlabDebug.h"
 #include "fdcan.h"
@@ -226,6 +227,7 @@ uint8_t Engineer_Arm_Init(void)
     s_clamp_close = 1U;
     s_last_retry_tick = 0U;
     Arm_Control_Debug.state = ARM_STATE_WAIT_FEEDBACK;
+    Arm_OneClick_Init();
     return 0U;
 }
 
@@ -289,6 +291,27 @@ void Engineer_Arm_Task(const Arm_Motor_Group_t *feedback,
         Arm_LimitTargets();
     }
 #endif
+
+    /*
+     * 一键动作引擎：激活时沿轨迹覆盖 s_target[]（优先级高于 DBUS/MATLAB），
+     * 覆盖后再钳一次限位。空闲则不动 s_target[]，上面逻辑照常生效。
+     * 仅在关节目标已全部有效、且未处于全失能模式时允许执行。
+     */
+    {
+        float current_pos[ARM_JOINT_COUNT];
+        for (uint8_t axis = 0U; axis < ARM_JOINT_COUNT; axis++) {
+            current_pos[axis] = Arm_GetFeedback(feedback, axis)->pos;
+        }
+        if (s_target_valid_mask == 0x3FU && Arm_Control_Config.master_enable != 0xFFU) {
+            if (Arm_OneClick_Update(current_pos, s_target, ARM_JOINT_COUNT)) {
+                Arm_LimitTargets();
+            }
+        } else if (Arm_Control_Debug.oneclick_active) {
+            /* 条件不再满足（掉线/失能）时安全中止。 */
+            Arm_Control_Config.oneclick_abort = 1U;
+            Arm_OneClick_Update(current_pos, s_target, ARM_JOINT_COUNT);
+        }
+    }
 
     for (uint8_t axis = 0U; axis < ARM_JOINT_COUNT; axis++) {
         const DM_MOTOR_DATA_Typedef *motor = Arm_GetFeedback(feedback, axis);

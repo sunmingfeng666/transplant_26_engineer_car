@@ -35,6 +35,10 @@ typedef struct {
     volatile float torque_limit[ARM_JOINT_COUNT];
     volatile float ramp_time_s;
     Arm_Gravity_Model_t gravity[ARM_JOINT_COUNT];
+    /* 一键动作触发：0=无，1=展开,2=收回,3=自保护1,4=自保护2（见 Arm_OneClick_Req_e）。
+       引擎执行完自动清零。abort 置 1 可随时中止当前动作。 */
+    volatile uint8_t oneclick_request;
+    volatile uint8_t oneclick_abort;
 } Arm_Control_Config_t;
 
 typedef struct {
@@ -50,6 +54,10 @@ typedef struct {
     volatile float impedance_tau[ARM_JOINT_COUNT];
     volatile float command_tau[ARM_JOINT_COUNT];
     volatile float ramp[ARM_JOINT_COUNT];
+    /* 一键动作遥测：active=是否执行中，id=当前动作编号，phase=内部阶段。 */
+    volatile uint8_t oneclick_active;
+    volatile uint8_t oneclick_id;
+    volatile uint8_t oneclick_phase;
 } Arm_Control_Debug_t;
 
 extern volatile Arm_Control_Config_t Arm_Control_Config;
