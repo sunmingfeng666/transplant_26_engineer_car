@@ -5,6 +5,9 @@
 // 同时通过 USART10 周期性回传底盘状态，供遥控板确认双向链路。
 //
 #include "Chassis_Ctrl.h"
+
+#include <math.h>
+
 #include "Classic_Control.h"
 #include "Comm_DualBoard.h"
 #include "DJI_Motor.h"
@@ -20,6 +23,23 @@
 #define ENGINEER_CHASSIS_MAX_CURRENT        12000.0f
 #define ENGINEER_CHASSIS_PID_I_LIMIT        3000.0f
 #define ENGINEER_CHASSIS_FEEDBACK_PERIOD_MS 20U
+#define ENGINEER_CHASSIS_PID_DEFAULT_KP     5.0f
+#define ENGINEER_CHASSIS_PID_DEFAULT_KI     0.1f
+#define ENGINEER_CHASSIS_PID_DEFAULT_KD     0.0f
+#define ENGINEER_CHASSIS_PID_MAX_KP         100.0f
+#define ENGINEER_CHASSIS_PID_MAX_KI         10.0f
+#define ENGINEER_CHASSIS_PID_MAX_KD         10.0f
+
+typedef struct {
+    volatile float kp[4];
+    volatile float ki[4];
+    volatile float kd[4];
+    volatile float max_out[4];
+    volatile float i_limit[4];
+    volatile float target_rpm[4];
+    volatile float speed_rpm[4];
+    volatile float output_current[4];
+} Chassis_PID_Readback_t;
 
 typedef struct {
     PID_t speed_pid[4];
@@ -34,18 +54,36 @@ typedef struct {
 
 static Engineer_Chassis_Ctrl_t chassis_ctrl;
 
+volatile float Chassis_PID_Kp[4] __attribute__((used)) = {0};
+volatile float Chassis_PID_Ki[4] __attribute__((used)) = {0};
+volatile float Chassis_PID_Kd[4] __attribute__((used)) = {0};
+volatile float Chassis_PID_MaxOut[4] __attribute__((used)) = {0};
+volatile float Chassis_PID_ILimit[4] __attribute__((used)) = {0};
+volatile uint8_t Chassis_PID_Clear __attribute__((used)) = 0U;
+volatile Chassis_PID_Readback_t Chassis_PID_Readback __attribute__((used)) = {0};
+
 static void Chassis_Clear_Output(void);
 static void Chassis_Send_Feedback(const Chassis_Motor_Group_t *c_motor,
                                   DualBoard_Chassis_Feedback_Status_e status,
                                   int16_t error_code);
 static uint8_t Chassis_Get_Motor_Online_Bits(const Chassis_Motor_Group_t *c_motor);
 static void Chassis_Resolve(float vx_mm_s, float vy_mm_s, float vw_mrad_s, float *wheel_rpm);
+static void Chassis_PID_Debug_Init_Defaults(void);
+static void Chassis_PID_Debug_Sync(void);
+static void Chassis_PID_Debug_Update_Readback(const Chassis_Motor_Group_t *c_motor, const int16_t out[4]);
+static float Limit_Finite(float value, float min_value, float max_value, float fallback);
 static float Limit_Float(float value, float min_value, float max_value);
 static float Abs_Float(float value);
 
 uint8_t Engineer_Chassis_Init(void)
 {
-    float pid_param[3] = {5.0f, 0.1f, 0.0f};
+    float pid_param[3] = {
+        ENGINEER_CHASSIS_PID_DEFAULT_KP,
+        ENGINEER_CHASSIS_PID_DEFAULT_KI,
+        ENGINEER_CHASSIS_PID_DEFAULT_KD,
+    };
+
+    Chassis_PID_Debug_Init_Defaults();
     for (uint8_t i = 0; i < 4; i++) {
         // 使用新框架 PID 工具做 3508 速度环。
         // PID 输出直接作为 DJI 电机 0x200 电流命令发送。
@@ -97,11 +135,13 @@ void Engineer_Chassis_Task(const Chassis_Motor_Group_t *c_motor)
                     chassis_ctrl.target_rpm);
 
     int16_t out[4] = {0};
+    Chassis_PID_Debug_Sync();
     for (uint8_t i = 0; i < 4; i++) {
         out[i] = (int16_t)PID_Calculate(&chassis_ctrl.speed_pid[i],
                                         (float)c_motor->DJI_3508_Chassis[i].Speed_now,
                                         chassis_ctrl.target_rpm[i]);
     }
+    Chassis_PID_Debug_Update_Readback(c_motor, out);
 
     DJI_Motor_Send(&hfdcan1, 0x200, out[0], out[1], out[2], out[3]);
     Chassis_Send_Feedback(c_motor, DUALBOARD_FB_RUN, 0);
@@ -116,6 +156,68 @@ static void Chassis_Clear_Output(void)
         chassis_ctrl.target_rpm[i] = 0.0f;
     }
     DJI_Motor_Send(&hfdcan1, 0x200, 0, 0, 0, 0);
+}
+
+static void Chassis_PID_Debug_Init_Defaults(void)
+{
+    for (uint8_t i = 0; i < 4; i++) {
+        Chassis_PID_Kp[i] = ENGINEER_CHASSIS_PID_DEFAULT_KP;
+        Chassis_PID_Ki[i] = ENGINEER_CHASSIS_PID_DEFAULT_KI;
+        Chassis_PID_Kd[i] = ENGINEER_CHASSIS_PID_DEFAULT_KD;
+        Chassis_PID_MaxOut[i] = ENGINEER_CHASSIS_MAX_CURRENT;
+        Chassis_PID_ILimit[i] = ENGINEER_CHASSIS_PID_I_LIMIT;
+    }
+    Chassis_PID_Clear = 0U;
+}
+
+static void Chassis_PID_Debug_Sync(void)
+{
+    for (uint8_t i = 0; i < 4; i++) {
+        float kpid[3];
+
+        kpid[0] = Limit_Finite(Chassis_PID_Kp[i], 0.0f, ENGINEER_CHASSIS_PID_MAX_KP,
+                               ENGINEER_CHASSIS_PID_DEFAULT_KP);
+        kpid[1] = Limit_Finite(Chassis_PID_Ki[i], 0.0f, ENGINEER_CHASSIS_PID_MAX_KI,
+                               ENGINEER_CHASSIS_PID_DEFAULT_KI);
+        kpid[2] = Limit_Finite(Chassis_PID_Kd[i], 0.0f, ENGINEER_CHASSIS_PID_MAX_KD,
+                               ENGINEER_CHASSIS_PID_DEFAULT_KD);
+
+        Chassis_PID_Kp[i] = kpid[0];
+        Chassis_PID_Ki[i] = kpid[1];
+        Chassis_PID_Kd[i] = kpid[2];
+        Chassis_PID_MaxOut[i] = Limit_Finite(Chassis_PID_MaxOut[i], 0.0f,
+                                             ENGINEER_CHASSIS_MAX_CURRENT,
+                                             ENGINEER_CHASSIS_MAX_CURRENT);
+        Chassis_PID_ILimit[i] = Limit_Finite(Chassis_PID_ILimit[i], 0.0f,
+                                             ENGINEER_CHASSIS_PID_I_LIMIT,
+                                             ENGINEER_CHASSIS_PID_I_LIMIT);
+
+        PID_set(&chassis_ctrl.speed_pid[i], kpid);
+        chassis_ctrl.speed_pid[i].MaxOut = Chassis_PID_MaxOut[i];
+        chassis_ctrl.speed_pid[i].IntegralLimit = Chassis_PID_ILimit[i];
+        if (Chassis_PID_Clear != 0U) {
+            PID_Clear(&chassis_ctrl.speed_pid[i]);
+        }
+    }
+
+    if (Chassis_PID_Clear != 0U) {
+        Chassis_PID_Clear = 0U;
+    }
+}
+
+static void Chassis_PID_Debug_Update_Readback(const Chassis_Motor_Group_t *c_motor, const int16_t out[4])
+{
+    for (uint8_t i = 0; i < 4; i++) {
+        Chassis_PID_Readback.kp[i] = chassis_ctrl.speed_pid[i].Kp;
+        Chassis_PID_Readback.ki[i] = chassis_ctrl.speed_pid[i].Ki;
+        Chassis_PID_Readback.kd[i] = chassis_ctrl.speed_pid[i].Kd;
+        Chassis_PID_Readback.max_out[i] = chassis_ctrl.speed_pid[i].MaxOut;
+        Chassis_PID_Readback.i_limit[i] = chassis_ctrl.speed_pid[i].IntegralLimit;
+        Chassis_PID_Readback.target_rpm[i] = chassis_ctrl.target_rpm[i];
+        Chassis_PID_Readback.speed_rpm[i] = (c_motor != NULL) ?
+            (float)c_motor->DJI_3508_Chassis[i].Speed_now : 0.0f;
+        Chassis_PID_Readback.output_current[i] = (out != NULL) ? (float)out[i] : 0.0f;
+    }
 }
 
 static void Chassis_Send_Feedback(const Chassis_Motor_Group_t *c_motor,
@@ -188,6 +290,12 @@ static float Limit_Float(float value, float min_value, float max_value)
     if (value > max_value) return max_value;
     if (value < min_value) return min_value;
     return value;
+}
+
+static float Limit_Finite(float value, float min_value, float max_value, float fallback)
+{
+    if (!isfinite(value)) value = fallback;
+    return Limit_Float(value, min_value, max_value);
 }
 
 static float Abs_Float(float value)

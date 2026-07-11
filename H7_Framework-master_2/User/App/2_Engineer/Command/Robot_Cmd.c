@@ -1,4 +1,5 @@
 #include "Robot_Cmd.h"
+
 #include "Message_Center.h"
 #include "System_State.h"
 #include "DBUS.h"
@@ -43,10 +44,14 @@ static Picture_Cmd_t picture_cmd = {
     .enable = 0U,
 };
 
+volatile Chassis_Cmd_t Chassis_Debug_Readback __attribute__((used)) = {0};
+volatile uint8_t Chassis_Debug_RemoteOnline __attribute__((used)) = 0U;
+
 static void Cmd_Handle_Safe_Mode(void);
 static void Cmd_Update_Remote_Ctrl(void);
 static void Cmd_Update_Mouse_Key(void);
 static void Cmd_Update_Picture_Ctrl(void);
+static void Cmd_Update_Chassis_Debug(void);
 static void Cmd_DualBoard_Sync(void);
 static DualBoard_Chassis_Mode_e Cmd_To_DualBoard_Mode(Chassis_Mode_e mode);
 static int32_t Cmd_Limit_Int32(int32_t value, int32_t min_value, int32_t max_value);
@@ -80,6 +85,7 @@ void Robot_Cmd_Update(void)
         cmd_sys_state.global_mode == GLOBAL_MODULE_ERROR ||
         cmd_sys_state.global_mode == GLOBAL_STANDBY) {
         Cmd_Handle_Safe_Mode();
+        Cmd_Update_Chassis_Debug();
         PubPushMessage(chassis_cmd_pub, &chassis_cmd);
         PubPushMessage(gimbal_cmd_pub, &gimbal_cmd);
         PubPushMessage(shoot_cmd_pub, &shoot_cmd);
@@ -93,6 +99,8 @@ void Robot_Cmd_Update(void)
     } else {
         Cmd_Update_Remote_Ctrl();
     }
+
+    Cmd_Update_Chassis_Debug();
 
     PubPushMessage(chassis_cmd_pub, &chassis_cmd);
     PubPushMessage(gimbal_cmd_pub, &gimbal_cmd);
@@ -185,6 +193,17 @@ static void Cmd_Update_Picture_Ctrl(void)
     picture_cmd.pitch_us = Cmd_Limit_Servo_Us((int32_t)picture_cmd.pitch_us + pitch_delta * PICTURE_SERVO_STEP_US);
 
     Picture_Servo_Set(picture_cmd.yaw_us, picture_cmd.pitch_us);
+}
+
+static void Cmd_Update_Chassis_Debug(void)
+{
+    Chassis_Debug_RemoteOnline = (vt13_data.offline.is_online || dbus_data.offline.is_online) ? 1U : 0U;
+
+    Chassis_Debug_Readback.mode = chassis_cmd.mode;
+    Chassis_Debug_Readback.target_vx = chassis_cmd.target_vx;
+    Chassis_Debug_Readback.target_vy = chassis_cmd.target_vy;
+    Chassis_Debug_Readback.target_vw = chassis_cmd.target_vw;
+    Chassis_Debug_Readback.offset_angle = chassis_cmd.offset_angle;
 }
 
 static void Cmd_DualBoard_Sync(void)
