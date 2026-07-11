@@ -5,6 +5,9 @@
 // 底盘板会通过同一个 USART10 回传状态反馈帧。
 //
 #include "Robot_Cmd.h"
+
+#include <math.h>
+
 #include "Message_Center.h"
 #include "System_State.h"
 #include "DBUS.h"
@@ -15,6 +18,9 @@
 #define RC_ROCKER_XY_COEF      0.004f
 #define RC_ROCKER_VW_COEF      0.02f
 #define KB_WASD_COEF           1.0f
+#define CHASSIS_DEBUG_MAX_VX   4.0f
+#define CHASSIS_DEBUG_MAX_VY   4.0f
+#define CHASSIS_DEBUG_MAX_VW   8.0f
 
 // 订阅器读取系统和设备数据，发布器维持框架内部 App 主题流。
 static Subscriber_t *sys_state_sub;
@@ -33,9 +39,19 @@ static Chassis_Cmd_t chassis_cmd = {0};
 static Gimbal_Cmd_t gimbal_cmd = {0};
 static Shoot_Cmd_t shoot_cmd = {0};
 
+volatile uint8_t Chassis_Debug_Enable __attribute__((used)) = 0U;
+volatile Chassis_Cmd_t Chassis_Debug_Cmd __attribute__((used)) = {
+    .mode = CHASSIS_CMD_SAFE,
+};
+volatile Chassis_Cmd_t Chassis_Debug_Readback __attribute__((used)) = {0};
+volatile uint8_t Chassis_Debug_RemoteOnline __attribute__((used)) = 0U;
+
 static void Cmd_Handle_Safe_Mode(void);
 static void Cmd_Update_Remote_Ctrl(void);
 static void Cmd_Update_Mouse_Key(void);
+static void Cmd_Update_Chassis_Debug(uint8_t allow_override);
+static float Cmd_Clamp_Float(float value, float min_value, float max_value);
+static Chassis_Mode_e Cmd_Clamp_Chassis_Mode(uint8_t mode);
 static void Cmd_DualBoard_Sync(void);
 static DualBoard_Chassis_Mode_e Cmd_To_DualBoard_Mode(Chassis_Mode_e mode);
 
@@ -66,6 +82,7 @@ void Robot_Cmd_Update(void)
         cmd_sys_state.global_mode == GLOBAL_STANDBY) {
         // 发送安全帧后立即返回，避免后面的输入计算覆盖 0 速度。
         Cmd_Handle_Safe_Mode();
+        Cmd_Update_Chassis_Debug(0U);
         PubPushMessage(chassis_cmd_pub, &chassis_cmd);
         PubPushMessage(gimbal_cmd_pub, &gimbal_cmd);
         PubPushMessage(shoot_cmd_pub, &shoot_cmd);
@@ -78,6 +95,8 @@ void Robot_Cmd_Update(void)
     } else {
         Cmd_Update_Remote_Ctrl();
     }
+
+    Cmd_Update_Chassis_Debug(1U);
 
     PubPushMessage(chassis_cmd_pub, &chassis_cmd);
     PubPushMessage(gimbal_cmd_pub, &gimbal_cmd);
@@ -134,6 +153,48 @@ static void Cmd_Update_Mouse_Key(void)
         chassis_cmd.mode = CHASSIS_CMD_FREE;
         chassis_cmd.target_vw = active_vw;
     }
+}
+
+static void Cmd_Update_Chassis_Debug(uint8_t allow_override)
+{
+    Chassis_Debug_RemoteOnline = (vt13_data.offline.is_online || dbus_data.offline.is_online) ? 1U : 0U;
+
+    if (allow_override == 1U && Chassis_Debug_Enable == 1U) {
+        chassis_cmd.mode = Cmd_Clamp_Chassis_Mode((uint8_t)Chassis_Debug_Cmd.mode);
+        chassis_cmd.target_vx = Cmd_Clamp_Float(Chassis_Debug_Cmd.target_vx,
+                                                -CHASSIS_DEBUG_MAX_VX,
+                                                CHASSIS_DEBUG_MAX_VX);
+        chassis_cmd.target_vy = Cmd_Clamp_Float(Chassis_Debug_Cmd.target_vy,
+                                                -CHASSIS_DEBUG_MAX_VY,
+                                                CHASSIS_DEBUG_MAX_VY);
+        chassis_cmd.target_vw = Cmd_Clamp_Float(Chassis_Debug_Cmd.target_vw,
+                                                -CHASSIS_DEBUG_MAX_VW,
+                                                CHASSIS_DEBUG_MAX_VW);
+        chassis_cmd.offset_angle = 0.0f;
+    }
+
+    Chassis_Debug_Readback.mode = chassis_cmd.mode;
+    Chassis_Debug_Readback.target_vx = chassis_cmd.target_vx;
+    Chassis_Debug_Readback.target_vy = chassis_cmd.target_vy;
+    Chassis_Debug_Readback.target_vw = chassis_cmd.target_vw;
+    Chassis_Debug_Readback.offset_angle = chassis_cmd.offset_angle;
+}
+
+static float Cmd_Clamp_Float(float value, float min_value, float max_value)
+{
+    if (!isfinite(value)) value = 0.0f;
+    if (value < min_value) return min_value;
+    if (value > max_value) return max_value;
+    return value;
+}
+
+static Chassis_Mode_e Cmd_Clamp_Chassis_Mode(uint8_t mode)
+{
+    if (mode == CHASSIS_CMD_SAFE) return CHASSIS_CMD_SAFE;
+    if (mode == CHASSIS_CMD_FOLLOW) return CHASSIS_CMD_FOLLOW;
+    if (mode == CHASSIS_CMD_FREE) return CHASSIS_CMD_FREE;
+    if (mode == CHASSIS_CMD_SPIN) return CHASSIS_CMD_SPIN;
+    return CHASSIS_CMD_SAFE;
 }
 
 static void Cmd_DualBoard_Sync(void)
