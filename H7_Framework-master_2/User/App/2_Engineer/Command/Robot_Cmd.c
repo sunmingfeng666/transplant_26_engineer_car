@@ -5,6 +5,7 @@
 // 底盘板会通过同一个 USART10 回传状态反馈帧。
 //
 #include "Robot_Cmd.h"
+
 #include "Message_Center.h"
 #include "System_State.h"
 #include "DBUS.h"
@@ -33,9 +34,13 @@ static Chassis_Cmd_t chassis_cmd = {0};
 static Gimbal_Cmd_t gimbal_cmd = {0};
 static Shoot_Cmd_t shoot_cmd = {0};
 
+volatile Chassis_Cmd_t Chassis_Debug_Readback __attribute__((used)) = {0};
+volatile uint8_t Chassis_Debug_RemoteOnline __attribute__((used)) = 0U;
+
 static void Cmd_Handle_Safe_Mode(void);
 static void Cmd_Update_Remote_Ctrl(void);
 static void Cmd_Update_Mouse_Key(void);
+static void Cmd_Update_Chassis_Debug(void);
 static void Cmd_DualBoard_Sync(void);
 static DualBoard_Chassis_Mode_e Cmd_To_DualBoard_Mode(Chassis_Mode_e mode);
 
@@ -66,6 +71,7 @@ void Robot_Cmd_Update(void)
         cmd_sys_state.global_mode == GLOBAL_STANDBY) {
         // 发送安全帧后立即返回，避免后面的输入计算覆盖 0 速度。
         Cmd_Handle_Safe_Mode();
+        Cmd_Update_Chassis_Debug();
         PubPushMessage(chassis_cmd_pub, &chassis_cmd);
         PubPushMessage(gimbal_cmd_pub, &gimbal_cmd);
         PubPushMessage(shoot_cmd_pub, &shoot_cmd);
@@ -78,6 +84,8 @@ void Robot_Cmd_Update(void)
     } else {
         Cmd_Update_Remote_Ctrl();
     }
+
+    Cmd_Update_Chassis_Debug();
 
     PubPushMessage(chassis_cmd_pub, &chassis_cmd);
     PubPushMessage(gimbal_cmd_pub, &gimbal_cmd);
@@ -134,6 +142,17 @@ static void Cmd_Update_Mouse_Key(void)
         chassis_cmd.mode = CHASSIS_CMD_FREE;
         chassis_cmd.target_vw = active_vw;
     }
+}
+
+static void Cmd_Update_Chassis_Debug(void)
+{
+    Chassis_Debug_RemoteOnline = (vt13_data.offline.is_online || dbus_data.offline.is_online) ? 1U : 0U;
+
+    Chassis_Debug_Readback.mode = chassis_cmd.mode;
+    Chassis_Debug_Readback.target_vx = chassis_cmd.target_vx;
+    Chassis_Debug_Readback.target_vy = chassis_cmd.target_vy;
+    Chassis_Debug_Readback.target_vw = chassis_cmd.target_vw;
+    Chassis_Debug_Readback.offset_angle = chassis_cmd.offset_angle;
 }
 
 static void Cmd_DualBoard_Sync(void)

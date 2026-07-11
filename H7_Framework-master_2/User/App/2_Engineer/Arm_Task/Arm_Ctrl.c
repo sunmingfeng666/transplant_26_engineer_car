@@ -3,9 +3,10 @@
 #include <math.h>
 #include <string.h>
 
-#include "Arm_MatlabDebug.h"
+#include "Classic_Control.h"
 #include "Arm_OneClick.h"
 #include "DM_Motor.h"
+#include "Arm_MatlabDebug.h"
 #include "fdcan.h"
 
 #define ARM_AXIS_J1 0U
@@ -30,12 +31,20 @@
 #define ARM_MODE_UNKNOWN          0xFFU
 
 static float s_target[ARM_JOINT_COUNT];
+static PID_t s_external_pid[ARM_JOINT_COUNT];
 static uint8_t s_active_mode[ARM_JOINT_COUNT];
 static uint8_t s_prev_online[ARM_JOINT_COUNT];
 static uint8_t s_target_valid_mask;
 static uint8_t s_terminal_prev_online;
 static uint8_t s_clamp_close;
 static uint32_t s_last_retry_tick;
+
+volatile uint8_t Arm_Disable_Enable = 0U;
+
+static uint8_t Arm_IsDisabled(void)
+{
+    return Arm_Disable_Enable != 0U;
+}
 
 static float Arm_Clamp(float value, float min_value, float max_value)
 {
@@ -68,32 +77,36 @@ static uint16_t Arm_GetMotorId(uint8_t axis)
     return (uint16_t)(axis + 1U);
 }
 
-static uint8_t Arm_IsCompensatedAxis(uint8_t axis)
+static uint8_t Arm_IsForcePvAxis(uint8_t axis)
 {
-    return axis == ARM_AXIS_J2 || axis == ARM_AXIS_J4 || axis == ARM_AXIS_J5;
+    return axis == ARM_AXIS_J1 || axis == ARM_AXIS_J5;
 }
 
 static uint8_t Arm_RequestedMode(uint8_t axis)
 {
     uint8_t mode;
 
-    /* 如果 master_enable == 0xFF，所有轴进入失能模式 */
-    if (Arm_Control_Config.master_enable == 0xFFU) {
+    if (Arm_IsDisabled()) {
         return ARM_MODE_DISABLED;
     }
-
-    if (!Arm_IsCompensatedAxis(axis) || Arm_Control_Config.master_enable == 0U) {
+    if (axis >= ARM_JOINT_COUNT) {
+        return ARM_MODE_POSITION;
+    }
+    if (Arm_IsForcePvAxis(axis)) {
+        return ARM_MODE_POSITION;
+    }
+    if (Arm_Control_Config.master_enable != 1U) {
         return ARM_MODE_POSITION;
     }
 
     mode = Arm_Control_Config.axis_mode[axis];
-    if (mode > ARM_MODE_GRAVITY_IMPEDANCE) return ARM_MODE_POSITION;
+    if (mode > ARM_MODE_DISABLED) return ARM_MODE_POSITION;
     return mode;
 }
 
 static uint16_t Arm_DmMode(uint8_t mode)
 {
-    if (mode == ARM_MODE_DISABLED) return 0xFFFFU;  /* 失能模式特殊标记 */
+    if (mode == ARM_MODE_DISABLED) return 0xFFFFU;
     return mode == ARM_MODE_POSITION ? POS_MODE : MIT_MODE;
 }
 
@@ -103,16 +116,14 @@ static void Arm_ConfigureAxis(uint8_t axis, uint8_t requested_mode)
     uint16_t id = Arm_GetMotorId(axis);
     uint16_t new_dm_mode = Arm_DmMode(requested_mode);
 
-    /* 如果请求失能模式，直接发送失能命令 */
     if (requested_mode == ARM_MODE_DISABLED) {
         Motor_Mode(bus, id, MIT_MODE, DM_CMD_RESET_MODE);
         s_active_mode[axis] = ARM_MODE_DISABLED;
+        PID_Clear(&s_external_pid[axis]);
         Arm_Control_Debug.ramp[axis] = 0.0f;
         return;
     }
 
-    /* 切换 DM 硬件模式前先复位旧模式；但失能模式(ARM_MODE_DISABLED)在硬件上
-     * 已等同复位状态，其 Arm_DmMode 为 0xFFFF 无效标记，不能用来构造 CAN ID，故跳过。 */
     if (s_active_mode[axis] != ARM_MODE_UNKNOWN &&
         s_active_mode[axis] != ARM_MODE_DISABLED &&
         Arm_DmMode(s_active_mode[axis]) != new_dm_mode) {
@@ -121,7 +132,52 @@ static void Arm_ConfigureAxis(uint8_t axis, uint8_t requested_mode)
     Motor_Mode(bus, id, new_dm_mode, DM_CMD_CLEAR_ERROR);
     Motor_Mode(bus, id, new_dm_mode, DM_CMD_MOTOR_MODE);
     s_active_mode[axis] = requested_mode;
+    PID_Clear(&s_external_pid[axis]);
     Arm_Control_Debug.ramp[axis] = requested_mode == ARM_MODE_POSITION ? 1.0f : 0.0f;
+}
+
+static void Arm_LoadExternalPidParam(uint8_t axis, float kpid[3])
+{
+    kpid[0] = Arm_Clamp(Arm_Control_Config.impedance_kp[axis], 0.0f, KP_MAX);
+    kpid[1] = Arm_Clamp(Arm_Control_Config.impedance_ki[axis], 0.0f, 50.0f);
+    kpid[2] = Arm_Clamp(Arm_Control_Config.impedance_kd[axis], 0.0f, KD_MAX);
+}
+
+static void Arm_InitExternalPid(uint8_t axis)
+{
+    float kpid[3];
+
+    if (axis >= ARM_JOINT_COUNT) return;
+    Arm_LoadExternalPidParam(axis, kpid);
+    PID_Init(&s_external_pid[axis],
+             Arm_Clamp(Arm_Control_Config.torque_limit[axis], 0.0f, T_MAX),
+             Arm_Clamp(Arm_Control_Config.impedance_i_limit[axis], 0.0f, T_MAX),
+             kpid,
+             0.0f, 0.0f,
+             0.0f, 0.0f,
+             0U,
+             Integral_Limit);
+}
+
+static void Arm_SyncExternalPid(uint8_t axis)
+{
+    float kpid[3];
+
+    if (axis >= ARM_JOINT_COUNT) return;
+    Arm_LoadExternalPidParam(axis, kpid);
+    PID_set(&s_external_pid[axis], kpid);
+    s_external_pid[axis].MaxOut = Arm_Clamp(Arm_Control_Config.torque_limit[axis], 0.0f, T_MAX);
+    s_external_pid[axis].IntegralLimit = Arm_Clamp(Arm_Control_Config.impedance_i_limit[axis], 0.0f, T_MAX);
+}
+
+static float Arm_CalcExternalPidTorque(uint8_t axis, float target, float position)
+{
+    if (axis >= ARM_JOINT_COUNT) {
+        return 0.0f;
+    }
+
+    Arm_SyncExternalPid(axis);
+    return PID_Calculate(&s_external_pid[axis], position, target);
 }
 
 static void Arm_LimitTargets(void)
@@ -159,10 +215,12 @@ static void Arm_UpdateDbusTarget(const DBUS_Typedef *dbus, float dt_s)
 uint8_t Engineer_Arm_Init(void)
 {
     memset(s_target, 0, sizeof(s_target));
+    memset(s_external_pid, 0, sizeof(s_external_pid));
     memset(s_prev_online, 0, sizeof(s_prev_online));
     memset((void *)&Arm_Control_Debug, 0, sizeof(Arm_Control_Debug));
     for (uint8_t axis = 0U; axis < ARM_JOINT_COUNT; axis++) {
         s_active_mode[axis] = ARM_MODE_UNKNOWN;
+        Arm_InitExternalPid(axis);
     }
     s_target_valid_mask = 0U;
     s_terminal_prev_online = 0U;
@@ -203,6 +261,7 @@ void Engineer_Arm_Task(const Arm_Motor_Group_t *feedback,
         if (!online) {
             fault_mask |= (uint16_t)(1U << axis);
             s_prev_online[axis] = 0U;
+            PID_Clear(&s_external_pid[axis]);
             if (retry_due) {
                 Arm_ConfigureAxis(axis, requested_mode);
             }
@@ -228,11 +287,6 @@ void Engineer_Arm_Task(const Arm_Motor_Group_t *feedback,
     Arm_UpdateDbusTarget(dbus, dt_s);
 
 #if ARM_MATLAB_DEBUG_ENABLE
-    /*
-     * MATLAB 联调（仅测试用）：使能且链路在线时覆盖 J2/J4/J5 目标，
-     * 覆盖后再钳一次限位保证安全；未使能/掉线则上面 DBUS 逻辑照常生效。
-     * 比赛固件编译开关关掉，本段代码从固件中消失。
-     */
     if (Arm_MatlabDebug_ApplyTarget(s_target, ARM_JOINT_COUNT)) {
         Arm_LimitTargets();
     }
@@ -267,9 +321,8 @@ void Engineer_Arm_Task(const Arm_Motor_Group_t *feedback,
         float command_tau = 0.0f;
 
         Arm_Control_Debug.target[axis] = s_target[axis];
-
-        /* 失能模式下不发送任何控制命令 */
         if (mode == ARM_MODE_DISABLED) {
+            PID_Clear(&s_external_pid[axis]);
             Arm_Control_Debug.gravity_tau[axis] = 0.0f;
             Arm_Control_Debug.impedance_tau[axis] = 0.0f;
             Arm_Control_Debug.command_tau[axis] = 0.0f;
@@ -284,6 +337,7 @@ void Engineer_Arm_Task(const Arm_Motor_Group_t *feedback,
         }
 
         if (mode == ARM_MODE_POSITION) {
+            PID_Clear(&s_external_pid[axis]);
             Pos_Speed_Ctrl(Arm_GetBus(axis), Arm_GetMotorId(axis), s_target[axis], ARM_JOINT_SPEED);
         } else {
             float ramp_time = Arm_Clamp(Arm_Control_Config.ramp_time_s, 0.1f, 5.0f);
@@ -295,11 +349,23 @@ void Engineer_Arm_Task(const Arm_Motor_Group_t *feedback,
             if (Arm_Control_Debug.ramp[axis] < 1.0f) any_ramping = 1U;
             else Arm_Control_Debug.ramp[axis] = 1.0f;
 
-            gravity_tau = Arm_JointController_Gravity(
-                axis, feedback->J2_8009.pos, feedback->J4_4340.pos, feedback->J5_4310.pos);
-            if (mode == ARM_MODE_GRAVITY_IMPEDANCE) {
-                impedance_tau = Arm_JointController_Impedance(
-                    axis, s_target[axis], motor->pos, motor->vel);
+            switch (mode) {
+            case ARM_MODE_GRAVITY:
+                gravity_tau = Arm_JointController_Gravity(
+                    axis, feedback->J2_8009.pos, feedback->J4_4340.pos, feedback->J5_4310.pos);
+                PID_Clear(&s_external_pid[axis]);
+                break;
+            case ARM_MODE_GRAVITY_IMPEDANCE:
+                gravity_tau = Arm_JointController_Gravity(
+                    axis, feedback->J2_8009.pos, feedback->J4_4340.pos, feedback->J5_4310.pos);
+                impedance_tau = Arm_CalcExternalPidTorque(axis, s_target[axis], motor->pos);
+                break;
+            case ARM_MODE_MIT:
+                impedance_tau = Arm_CalcExternalPidTorque(axis, s_target[axis], motor->pos);
+                break;
+            default:
+                PID_Clear(&s_external_pid[axis]);
+                break;
             }
             command_tau = (gravity_tau + impedance_tau) * Arm_Control_Debug.ramp[axis];
             command_tau = Arm_JointController_LimitTorque(axis, command_tau, &saturated);
@@ -314,8 +380,7 @@ void Engineer_Arm_Task(const Arm_Motor_Group_t *feedback,
         Arm_Control_Debug.command_tau[axis] = command_tau;
     }
 
-    /* 如果处于失能模式，末端夹爪也失能 */
-    if (Arm_Control_Config.master_enable == 0xFFU) {
+    if (Arm_IsDisabled()) {
         if (s_terminal_prev_online) {
             Motor_Mode(&hfdcan3, 0x07U, MIT_MODE, DM_CMD_RESET_MODE);
             s_terminal_prev_online = 0U;
@@ -342,7 +407,7 @@ void Engineer_Arm_Task(const Arm_Motor_Group_t *feedback,
     Arm_Control_Debug.fault_mask = fault_mask;
     Arm_Control_Debug.saturation_mask = saturation_mask;
 
-    if (Arm_Control_Config.master_enable == 0xFFU) Arm_Control_Debug.state = ARM_STATE_DISABLED;
+    if (Arm_IsDisabled()) Arm_Control_Debug.state = ARM_STATE_DISABLED;
     else if (s_target_valid_mask != 0x3FU) Arm_Control_Debug.state = ARM_STATE_WAIT_FEEDBACK;
     else if (fault_mask != 0U) Arm_Control_Debug.state = ARM_STATE_DEGRADED;
     else if (any_ramping) Arm_Control_Debug.state = ARM_STATE_MODE_RAMP;
