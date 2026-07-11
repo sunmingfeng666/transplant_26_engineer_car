@@ -14,6 +14,11 @@
 #define CMDID_Length 2U
 #define CRC16_Length 2U
 
+/* 裁判数据有效位：只有对应命令通过完整帧校验和载荷长度校验后才置位。 */
+#define REFEREE_VALID_ROBOT_STATUS (1UL << 0)
+#define REFEREE_VALID_POWER_HEAT   (1UL << 1)
+#define REFEREE_VALID_POWER_DATA   (REFEREE_VALID_ROBOT_STATUS | REFEREE_VALID_POWER_HEAT)
+
 /* ==================== CMD ID ==================== */
 enum Read_Cmd_ID_Typdef
 {
@@ -426,6 +431,9 @@ typedef struct __packed
 typedef struct
 {
     Offline_Check_t offline;
+    uint32_t valid_flags;                               /* 已成功接收且长度合法的关键命令标志 */
+    uint32_t robot_status_tick;                         /* 0x0201 最近一次合法更新时间 */
+    uint32_t power_heat_tick;                           /* 0x0202 最近一次合法更新时间 */
     game_status_t game_status;                           /* 内部包含：0x0001 比赛状态数据段 */
     game_result_t game_result;                           /* 内部包含：0x0002 比赛结果数据段 */
     game_robot_HP_t game_robot_HP;                       /* 内部包含：0x0003 所有机器人实时血量数据段 */

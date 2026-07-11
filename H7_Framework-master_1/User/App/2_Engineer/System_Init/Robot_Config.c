@@ -26,6 +26,11 @@ OFFLINE_NODE(&DBUS.offline, DBUS_OFFLINE_TIME, GROUP_NONE);
 UART_RX_NODE(&huart7, 21, VT13_RX_DATA, NULL, 21, &VT13, VT13_Resolved);
 OFFLINE_NODE(&VT13.offline, DBUS_OFFLINE_TIME, GROUP_NONE);
 
+// 裁判系统固定接到底盘板 USART1：双缓冲 DMA 接收支持连续帧和跨回调断包。
+UART_RX_NODE(&huart1, 0, Referee_Rx_Buf[0], Referee_Rx_Buf[1],
+             REFEREE_RXFRAME_LENGTH, NULL, Referee_System_Frame_Update);
+OFFLINE_NODE(&Referee.offline, REFEREE_OFFLINE_TIME, GROUP_NONE);
+
 // 底盘板 USART10 接收遥控板 USART10 发来的固定长度底盘帧。
 // 两个缓冲区放在 D2 RAM，因为 DMA 不能访问 H7 的所有内存区域。
 static uint8_t DualBoard_Rx_Buf[2][DUALBOARD_ENGINEER_FRAME_LEN] __attribute__((section(".RAM_D2")));

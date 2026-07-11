@@ -7,11 +7,11 @@
 #include "All_define.h"
 #include "DBUS.h"
 #include "VT13.h"
-#include "Referee.h"
 #include "Robot_Config.h"
 #include "Comm_DualBoard.h"
 #include "Power_CAP.h"
 #include "Arm_MatlabDebug.h"
+#include "usart.h"
 
 Chassis_Motor_Group_t chassis_motors;
 Gimbal_Motor_Group_t  gimbal_motors;
@@ -43,9 +43,6 @@ UART_RX_NODE(&huart7, 0, Arm_MatlabDebug_Rx_Buf[0], Arm_MatlabDebug_Rx_Buf[1],
 static uint8_t DualBoard_Rx_Buf[2][DUALBOARD_CHASSIS_FRAME_LEN] __attribute__((section(".RAM_D2")));
 UART_RX_NODE(&huart10, DUALBOARD_CHASSIS_FRAME_LEN, DualBoard_Rx_Buf[0], DualBoard_Rx_Buf[1],
              DUALBOARD_CHASSIS_FRAME_LEN, NULL, DualBoard_UART_Rx_Callback);
-
-UART_RX_NODE(&huart1, 0, Referee_Rx_Buf[0], Referee_Rx_Buf[1], REFEREE_RXFRAME_LENGTH, NULL, Referee_System_Frame_Update);
-OFFLINE_NODE(&Referee.offline, REFEREE_OFFLINE_TIME, GROUP_NONE);
 
 CAN_RX_NODE(FDCAN1, 0x201, &chassis_motors.DJI_3508_Chassis[0], DJI_Motor_Resolve);
 OFFLINE_NODE(&chassis_motors.DJI_3508_Chassis[0].offline, MOTOR_OFFLINE_TIME, CHASSIS);

@@ -4,194 +4,135 @@
 Referee_Data_t Referee;
 uint8_t Referee_Rx_Buf[2][REFEREE_RXFRAME_LENGTH]__attribute__((section(".RAM_D2")));
 
-static void Referee_System_Info_Update(uint16_t cmd_id, uint8_t *data_ptr, Referee_Data_t *user_data);
+static bool Referee_System_Info_Update(uint16_t cmd_id,
+                                       const uint8_t *data_ptr,
+                                       uint16_t payload_len,
+                                       Referee_Data_t *user_data);
 
 void Referee_System_Frame_Update(uint8_t *Buff, void *device_ptr, uint16_t Size)
 {
-    uint16_t i = 0;
-    uint16_t data_length = 0;
-    uint16_t cmd_id = 0;
-    uint8_t *data_ptr;
+    (void)device_ptr;
 
-    // 静态变量：用于保存上一次数据中的断包
-    static uint8_t remain_buf[REFEREE_MAX_PACKET_SIZE];
-    static uint16_t remain_len = 0; // 记录断包的实际长度
+    /*
+     * UART DMA 每次回调的切分位置不保证落在帧边界上，因此先把数据追加到流缓存，
+     * 再统一完成找帧头、长度检查、CRC 校验和断包保留。
+     */
+    static uint8_t stream_buf[REFEREE_RXFRAME_LENGTH + REFEREE_MAX_PACKET_SIZE];
+    static uint16_t stream_len = 0U;
 
-    if (Buff == NULL || Size == 0) return;
+    if (Buff == NULL || Size == 0U || Size > REFEREE_RXFRAME_LENGTH) return;
 
-    // 处理上一次遗留下来的断包
-    if (remain_len > 0)
-    {
-        // 计算新缓冲区需要借多少字节过来才能凑成一包，此时遗留包的 remain_buf 里已经包含了原本的帧头，我们可以直接读出它需要的 data_length
-        if (remain_len >= 3) // 至少要拿到长度字段
-        {
-            data_length = (uint16_t)(remain_buf[2] << 8 | remain_buf[1])
-                        + FrameHeader_Length + CMDID_Length + CRC16_Length;
-
-            uint16_t need_len = data_length - remain_len;
-            // 如果新缓冲区的数据足够填满这个断包
-            if (Size >= need_len && data_length <= REFEREE_MAX_PACKET_SIZE)
-            {
-                // 把新缓冲区的头部拼接到遗留缓存的尾部
-                memcpy(&remain_buf[remain_len], Buff, need_len);
-                // 校验这个拼接完成的临时完整包
-                if (Verify_CRC8_Check_Sum(remain_buf, FrameHeader_Length) == true &&
-                    Verify_CRC16_Check_Sum(remain_buf, data_length) == true)
-                {
-                    cmd_id = (uint16_t)(remain_buf[FrameHeader_Length + 1] << 8 | remain_buf[FrameHeader_Length]);
-                    data_ptr = &remain_buf[FrameHeader_Length + CMDID_Length];
-                    Referee_System_Info_Update(cmd_id, data_ptr, &Referee);
-                }
-                // 拼接包处理完毕，新缓冲区的指针需要向后跳过被借走的 need_len 字节
-                i = need_len;
-            }
-            else
-            {
-                // 如果新来的数据太短，连剩下的断包都填不满
-                if (remain_len + Size < REFEREE_MAX_PACKET_SIZE) {
-                    memcpy(&remain_buf[remain_len], Buff, Size);
-                    remain_len += Size;
-                } else {
-                    remain_len = 0; // 异常超长，直接丢弃
-                }
-                return; // 新数据用完了，直接退出
-            }
-        }
-        remain_len = 0; // 清空暂存标记，准备开始常规遍历
+    if ((uint32_t)stream_len + Size > sizeof(stream_buf)) {
+        /* 缓存状态异常时整段丢弃，禁止越界，也避免错误长度长期阻塞后续合法帧。 */
+        stream_len = 0U;
     }
-    while (i < Size)
-    {
-        if (Buff[i] == 0xA5)
-        {
-            // 检查剩余长度是否够一个帧头，不够的话说明帧头本身被截断了
-            if (i + FrameHeader_Length > Size)
-            {
-                remain_len = Size - i;
-                memcpy(remain_buf, &Buff[i], remain_len);
-                break;
-            }
-            // CRC8 校验帧头
-            if (Verify_CRC8_Check_Sum(&Buff[i], FrameHeader_Length) == true)
-            {
-                data_length = (uint16_t)(Buff[i+2] << 8 | Buff[i+1])
-                            + FrameHeader_Length + CMDID_Length + CRC16_Length;
-                // 检查整帧是否超出了当前缓冲区的边界
-                if (i + data_length > Size)
-                {
-                    // 把这一段断包暂存到 remain_buf 中，留到下一次回调拼接
-                    remain_len = Size - i;
-                    if (remain_len <= REFEREE_MAX_PACKET_SIZE) {
-                        memcpy(remain_buf, &Buff[i], remain_len);
-                    } else {
-                        remain_len = 0;
-                    }
-                    break; // 已经到缓冲区末尾了，直接退出循环
-                }
-                // 如果没越界，正常进行整帧 CRC16 校验
-                if (Verify_CRC16_Check_Sum(&Buff[i], data_length) == true)
-                {
-                    cmd_id = (uint16_t)(Buff[i + FrameHeader_Length + 1] << 8 | Buff[i + FrameHeader_Length]);
-                    data_ptr = &Buff[i + FrameHeader_Length + CMDID_Length];
+    memcpy(&stream_buf[stream_len], Buff, Size);
+    stream_len = (uint16_t)(stream_len + Size);
 
-                    Referee_System_Info_Update(cmd_id, data_ptr, &Referee);
-
-                    i += data_length; // 成功跳过整帧
-                    continue;
-                }
-            }
+    uint16_t offset = 0U;
+    while ((uint16_t)(stream_len - offset) >= FrameHeader_Length) {
+        if (stream_buf[offset] != 0xA5U) {
+            offset++;
+            continue;
         }
-        i++;
+
+        if (!Verify_CRC8_Check_Sum(&stream_buf[offset], FrameHeader_Length)) {
+            offset++;
+            continue;
+        }
+
+        const uint16_t payload_len = (uint16_t)stream_buf[offset + 1U]
+                                   | ((uint16_t)stream_buf[offset + 2U] << 8U);
+        const uint32_t frame_len_u32 = (uint32_t)payload_len
+                                     + FrameHeader_Length + CMDID_Length + CRC16_Length;
+
+        /* 单包上限同时约束声明长度和实际访问范围，异常帧只滑动一个字节重新找头。 */
+        if (frame_len_u32 > REFEREE_MAX_PACKET_SIZE ||
+            frame_len_u32 < (FrameHeader_Length + CMDID_Length + CRC16_Length)) {
+            offset++;
+            continue;
+        }
+
+        const uint16_t frame_len = (uint16_t)frame_len_u32;
+        if ((uint16_t)(stream_len - offset) < frame_len) {
+            /* 当前回调数据不足一整帧，保留到下一次 DMA 回调继续拼接。 */
+            break;
+        }
+
+        if (Verify_CRC16_Check_Sum(&stream_buf[offset], frame_len)) {
+            const uint16_t cmd_id = (uint16_t)stream_buf[offset + FrameHeader_Length]
+                                  | ((uint16_t)stream_buf[offset + FrameHeader_Length + 1U] << 8U);
+            const uint8_t *data_ptr = &stream_buf[offset + FrameHeader_Length + CMDID_Length];
+
+            /* 只有命令已支持且载荷长度正确，才更新数据和在线喂狗时间。 */
+            if (Referee_System_Info_Update(cmd_id, data_ptr, payload_len, &Referee)) {
+                Referee.offline.last_feed_tick = HAL_GetTick();
+            }
+            offset = (uint16_t)(offset + frame_len);
+            continue;
+        }
+
+        offset++;
+    }
+
+    if (offset > 0U) {
+        const uint16_t remain_len = (uint16_t)(stream_len - offset);
+        if (remain_len > 0U) {
+            memmove(stream_buf, &stream_buf[offset], remain_len);
+        }
+        stream_len = remain_len;
     }
 }
 
-static void Referee_System_Info_Update(uint16_t cmd_id, uint8_t *data_ptr, Referee_Data_t *user_data)
+static bool Referee_System_Info_Update(uint16_t cmd_id,
+                                       const uint8_t *data_ptr,
+                                       uint16_t payload_len,
+                                       Referee_Data_t *user_data)
 {
-    user_data->offline.last_feed_tick = HAL_GetTick();
+    if (data_ptr == NULL || user_data == NULL) return false;
+
+#define REFEREE_COPY_CASE(command, member, type) \
+        case command: \
+            if (payload_len != sizeof(type)) return false; \
+            memcpy(&user_data->member, data_ptr, sizeof(type)); \
+            return true
+
     switch (cmd_id)
     {
-        case game_state:
-            memcpy(&user_data->game_status, data_ptr, sizeof(game_status_t));
-            break;
-
-        case Match_results:
-            memcpy(&user_data->game_result, data_ptr, sizeof(game_result_t));
-            break;
-
-        case Robot_HP:
-            memcpy(&user_data->game_robot_HP, data_ptr, sizeof(game_robot_HP_t));
-            break;
-
-        case Venue_Events:
-            memcpy(&user_data->event_data, data_ptr, sizeof(event_data_t));
-            break;
-
-        case Referee_warning:
-            memcpy(&user_data->referee_warning, data_ptr, sizeof(referee_warning_t));
-            break;
-
-        case Dart_fire:
-            memcpy(&user_data->dart_info, data_ptr, sizeof(dart_info_t));
-            break;
-
+        REFEREE_COPY_CASE(game_state, game_status, game_status_t);
+        REFEREE_COPY_CASE(Match_results, game_result, game_result_t);
+        REFEREE_COPY_CASE(Robot_HP, game_robot_HP, game_robot_HP_t);
+        REFEREE_COPY_CASE(Venue_Events, event_data, event_data_t);
+        REFEREE_COPY_CASE(Referee_warning, referee_warning, referee_warning_t);
+        REFEREE_COPY_CASE(Dart_fire, dart_info, dart_info_t);
         case Robot_performan:
+            if (payload_len != sizeof(robot_status_t)) return false;
             memcpy(&user_data->robot_status, data_ptr, sizeof(robot_status_t));
-            break;
-
+            user_data->valid_flags |= REFEREE_VALID_ROBOT_STATUS;
+            user_data->robot_status_tick = HAL_GetTick();
+            return true;
         case time_power:
+            if (payload_len != sizeof(power_heat_data_t)) return false;
             memcpy(&user_data->power_heat_data, data_ptr, sizeof(power_heat_data_t));
-            break;
-
-        case Robot_location:
-            memcpy(&user_data->robot_pos, data_ptr, sizeof(robot_pos_t));
-            break;
-
-        case Robot_buff:
-            memcpy(&user_data->buff, data_ptr, sizeof(buff_t));
-            break;
-
-        case Damage_status:
-            memcpy(&user_data->hurt_data, data_ptr, sizeof(hurt_data_t));
-            break;
-
-        case time_shooting:
-            memcpy(&user_data->shoot_data, data_ptr, sizeof(shoot_data_t));
-            break;
-
-        case Allowable_ammo:
-            memcpy(&user_data->projectile_allowance, data_ptr, sizeof(projectile_allowance_t));
-            break;
-
-        case RFID_status:
-            memcpy(&user_data->rfid_status, data_ptr, sizeof(rfid_status_t));
-            break;
-
-        case Dart_directives:
-            memcpy(&user_data->dart_client_cmd, data_ptr, sizeof(dart_client_cmd_t));
-            break;
-
-        case Ground_location:
-            memcpy(&user_data->ground_robot_position, data_ptr, sizeof(ground_robot_position_t));
-            break;
-
-        case Radar_Marking:
-            memcpy(&user_data->radar_mark_data, data_ptr, sizeof(radar_mark_data_t));
-            break;
-
-        case Route_Informat:
-            memcpy(&user_data->sentry_info, data_ptr, sizeof(sentry_info_t));
-            break;
-
-        case Radar_Informat:
-            memcpy(&user_data->radar_info, data_ptr, sizeof(radar_info_t));
-            break;
-
-        case Minimap:
-            memcpy(&user_data->map_command, data_ptr, sizeof(map_command_t));
-            break;
-
-        default:
-            break;
+            user_data->valid_flags |= REFEREE_VALID_POWER_HEAT;
+            user_data->power_heat_tick = HAL_GetTick();
+            return true;
+        REFEREE_COPY_CASE(Robot_location, robot_pos, robot_pos_t);
+        REFEREE_COPY_CASE(Robot_buff, buff, buff_t);
+        REFEREE_COPY_CASE(Damage_status, hurt_data, hurt_data_t);
+        REFEREE_COPY_CASE(time_shooting, shoot_data, shoot_data_t);
+        REFEREE_COPY_CASE(Allowable_ammo, projectile_allowance, projectile_allowance_t);
+        REFEREE_COPY_CASE(RFID_status, rfid_status, rfid_status_t);
+        REFEREE_COPY_CASE(Dart_directives, dart_client_cmd, dart_client_cmd_t);
+        REFEREE_COPY_CASE(Ground_location, ground_robot_position, ground_robot_position_t);
+        REFEREE_COPY_CASE(Radar_Marking, radar_mark_data, radar_mark_data_t);
+        REFEREE_COPY_CASE(Route_Informat, sentry_info, sentry_info_t);
+        REFEREE_COPY_CASE(Radar_Informat, radar_info, radar_info_t);
+        REFEREE_COPY_CASE(Minimap, map_command, map_command_t);
+        default: return false;
     }
+
+#undef REFEREE_COPY_CASE
 }
 
 

@@ -7,7 +7,6 @@
 #include "DBUS.h"
 #include "Message_Center.h"
 #include "Power_CAP.h"
-#include "Referee.h"
 #include "Robot_Cmd.h"
 #include "System_State.h"
 #include "WS2812.h"
@@ -24,7 +23,6 @@ void Command_Task(void *argument)
     const TickType_t xTimeIncrement = pdMS_TO_TICKS(5);//绝对延时5ms
     PubRegister("dbus_data",  &DBUS,      sizeof(DBUS));
     PubRegister("vt13_data",  &VT13,      sizeof(VT13));
-    PubRegister("referee_data",  &Referee,      sizeof(Referee_Data_t));
     PubRegister("imu_data",   &IMU_Data,  sizeof(IMU_Data));
     PubRegister("cap_data",   &cap,  sizeof(cap));
 

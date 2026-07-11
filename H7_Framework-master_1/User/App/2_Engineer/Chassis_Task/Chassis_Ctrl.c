@@ -8,10 +8,14 @@
 
 #include <math.h>
 
+#include "All_define.h"
 #include "Classic_Control.h"
 #include "Comm_DualBoard.h"
 #include "DJI_Motor.h"
 #include "fdcan.h"
+#include "Message_Center.h"
+#include "Power_Ctrl.h"
+#include "Referee.h"
 #include "System_State.h"
 #include "usart.h"
 
@@ -29,6 +33,11 @@
 #define ENGINEER_CHASSIS_PID_MAX_KP         100.0f
 #define ENGINEER_CHASSIS_PID_MAX_KI         10.0f
 #define ENGINEER_CHASSIS_PID_MAX_KD         10.0f
+#define ENGINEER_CHASSIS_FALLBACK_POWER_W   45.0f
+#define ENGINEER_CHASSIS_BUFFER_TARGET_J    40.0f
+#define ENGINEER_CHASSIS_BUFFER_KP           2.0f
+#define ENGINEER_CHASSIS_MAX_BUFFER_J        60U
+#define ENGINEER_CHASSIS_MAX_REF_POWER_W    500U
 
 typedef struct {
     volatile float kp[4];
@@ -38,7 +47,13 @@ typedef struct {
     volatile float i_limit[4];
     volatile float target_rpm[4];
     volatile float speed_rpm[4];
+    volatile float raw_output_current[4];
     volatile float output_current[4];
+    volatile float allowed_power;
+    volatile float predicted_power;
+    volatile uint32_t referee_valid_flags;
+    volatile uint8_t referee_online;
+    volatile uint8_t using_referee_power;
 } Chassis_PID_Readback_t;
 
 typedef struct {
@@ -53,6 +68,12 @@ typedef struct {
 } Engineer_Chassis_Ctrl_t;
 
 static Engineer_Chassis_Ctrl_t chassis_ctrl;
+static Power_Ctrl_t chassis_power_model;
+static Motor_Power_State_t chassis_power_states[4];
+static Power_Node_t chassis_power_nodes[4];
+static Power_Group_t chassis_power_group;
+static Subscriber_t *referee_sub;
+static Referee_Data_t chassis_referee;
 
 volatile float Chassis_PID_Kp[4] __attribute__((used)) = {0};
 volatile float Chassis_PID_Ki[4] __attribute__((used)) = {0};
@@ -70,7 +91,12 @@ static uint8_t Chassis_Get_Motor_Online_Bits(const Chassis_Motor_Group_t *c_moto
 static void Chassis_Resolve(float vx_mm_s, float vy_mm_s, float vw_mrad_s, float *wheel_rpm);
 static void Chassis_PID_Debug_Init_Defaults(void);
 static void Chassis_PID_Debug_Sync(void);
-static void Chassis_PID_Debug_Update_Readback(const Chassis_Motor_Group_t *c_motor, const int16_t out[4]);
+static void Chassis_PID_Debug_Update_Readback(const Chassis_Motor_Group_t *c_motor,
+                                              const float raw_out[4],
+                                              const int16_t limited_out[4],
+                                              float allowed_power,
+                                              uint8_t using_referee_power);
+static float Chassis_Get_Allowed_Power(const Referee_Data_t *referee, uint8_t *using_referee_power);
 static float Limit_Finite(float value, float min_value, float max_value, float fallback);
 static float Limit_Float(float value, float min_value, float max_value);
 static float Abs_Float(float value);
@@ -84,6 +110,8 @@ uint8_t Engineer_Chassis_Init(void)
     };
 
     Chassis_PID_Debug_Init_Defaults();
+    Power_Ctrl_Init(&chassis_power_model);
+    referee_sub = SubRegister("referee_data", sizeof(Referee_Data_t));
     for (uint8_t i = 0; i < 4; i++) {
         // 使用新框架 PID 工具做 3508 速度环。
         // PID 输出直接作为 DJI 电机 0x200 电流命令发送。
@@ -95,7 +123,13 @@ uint8_t Engineer_Chassis_Init(void)
                  0.0f, 0.0f,
                  0,
                  Integral_Limit);
+
+        // 四个 3508 作为同一个功率组，统一按比例削减电流，保持底盘运动方向。
+        chassis_power_nodes[i].state = &chassis_power_states[i];
+        chassis_power_nodes[i].model = &MODEL_M3508;
     }
+    chassis_power_group.nodes = chassis_power_nodes;
+    chassis_power_group.node_count = 4U;
 
     // 第一版移植保持和旧工程一致的麦轮几何参数。
     // 57.3 是旧工程沿用的 rad->deg 近似系数。
@@ -134,14 +168,33 @@ void Engineer_Chassis_Task(const Chassis_Motor_Group_t *c_motor)
                     B2B_Chassis_Cmd.vw_mrad_s,
                     chassis_ctrl.target_rpm);
 
+    float raw_out[4] = {0.0f};
     int16_t out[4] = {0};
     Chassis_PID_Debug_Sync();
-    for (uint8_t i = 0; i < 4; i++) {
-        out[i] = (int16_t)PID_Calculate(&chassis_ctrl.speed_pid[i],
-                                        (float)c_motor->DJI_3508_Chassis[i].Speed_now,
-                                        chassis_ctrl.target_rpm[i]);
+    if (referee_sub != NULL) {
+        SubGetMessage(referee_sub, &chassis_referee);
     }
-    Chassis_PID_Debug_Update_Readback(c_motor, out);
+
+    for (uint8_t i = 0; i < 4; i++) {
+        raw_out[i] = PID_Calculate(&chassis_ctrl.speed_pid[i],
+                                   (float)c_motor->DJI_3508_Chassis[i].Speed_now,
+                                   chassis_ctrl.target_rpm[i]);
+        chassis_power_states[i].speed_rpm = (float)c_motor->DJI_3508_Chassis[i].Speed_now;
+        chassis_power_states[i].original_cmd = raw_out[i];
+    }
+
+    uint8_t using_referee_power = 0U;
+    const float allowed_power = Chassis_Get_Allowed_Power(&chassis_referee, &using_referee_power);
+    Power_Ctrl_Calculate(&chassis_power_model, allowed_power, &chassis_power_group, 1U);
+
+    for (uint8_t i = 0; i < 4; i++) {
+        const float limited = Limit_Finite(chassis_power_states[i].limited_cmd,
+                                           -ENGINEER_CHASSIS_MAX_CURRENT,
+                                           ENGINEER_CHASSIS_MAX_CURRENT,
+                                           0.0f);
+        out[i] = (int16_t)limited;
+    }
+    Chassis_PID_Debug_Update_Readback(c_motor, raw_out, out, allowed_power, using_referee_power);
 
     DJI_Motor_Send(&hfdcan1, 0x200, out[0], out[1], out[2], out[3]);
     Chassis_Send_Feedback(c_motor, DUALBOARD_FB_RUN, 0);
@@ -168,6 +221,30 @@ static void Chassis_PID_Debug_Init_Defaults(void)
         Chassis_PID_ILimit[i] = ENGINEER_CHASSIS_PID_I_LIMIT;
     }
     Chassis_PID_Clear = 0U;
+}
+
+static float Chassis_Get_Allowed_Power(const Referee_Data_t *referee, uint8_t *using_referee_power)
+{
+    const uint32_t now = HAL_GetTick();
+    if (using_referee_power != NULL) *using_referee_power = 0U;
+    if (referee == NULL || !referee->offline.is_online ||
+        (referee->valid_flags & REFEREE_VALID_POWER_DATA) != REFEREE_VALID_POWER_DATA ||
+        (now - referee->robot_status_tick) > REFEREE_OFFLINE_TIME ||
+        (now - referee->power_heat_tick) > REFEREE_OFFLINE_TIME ||
+        referee->robot_status.chassis_power_limit == 0U ||
+        referee->robot_status.chassis_power_limit > ENGINEER_CHASSIS_MAX_REF_POWER_W ||
+        referee->power_heat_data.buffer_energy > ENGINEER_CHASSIS_MAX_BUFFER_J) {
+        // 裁判掉线、关键帧未收齐或数值异常时使用固定 45W，避免零值和脏数据直接控制底盘。
+        return ENGINEER_CHASSIS_FALLBACK_POWER_W;
+    }
+
+    if (using_referee_power != NULL) *using_referee_power = 1U;
+    const float allowed_power = (float)referee->robot_status.chassis_power_limit
+                              + ENGINEER_CHASSIS_BUFFER_KP
+                              * ((float)referee->power_heat_data.buffer_energy
+                                 - ENGINEER_CHASSIS_BUFFER_TARGET_J);
+    // 缓冲能量耗尽时允许降到 0W；严禁产生负功率上限。
+    return (allowed_power > 0.0f) ? allowed_power : 0.0f;
 }
 
 static void Chassis_PID_Debug_Sync(void)
@@ -205,7 +282,11 @@ static void Chassis_PID_Debug_Sync(void)
     }
 }
 
-static void Chassis_PID_Debug_Update_Readback(const Chassis_Motor_Group_t *c_motor, const int16_t out[4])
+static void Chassis_PID_Debug_Update_Readback(const Chassis_Motor_Group_t *c_motor,
+                                              const float raw_out[4],
+                                              const int16_t limited_out[4],
+                                              float allowed_power,
+                                              uint8_t using_referee_power)
 {
     for (uint8_t i = 0; i < 4; i++) {
         Chassis_PID_Readback.kp[i] = chassis_ctrl.speed_pid[i].Kp;
@@ -216,8 +297,14 @@ static void Chassis_PID_Debug_Update_Readback(const Chassis_Motor_Group_t *c_mot
         Chassis_PID_Readback.target_rpm[i] = chassis_ctrl.target_rpm[i];
         Chassis_PID_Readback.speed_rpm[i] = (c_motor != NULL) ?
             (float)c_motor->DJI_3508_Chassis[i].Speed_now : 0.0f;
-        Chassis_PID_Readback.output_current[i] = (out != NULL) ? (float)out[i] : 0.0f;
+        Chassis_PID_Readback.raw_output_current[i] = (raw_out != NULL) ? raw_out[i] : 0.0f;
+        Chassis_PID_Readback.output_current[i] = (limited_out != NULL) ? (float)limited_out[i] : 0.0f;
     }
+    Chassis_PID_Readback.allowed_power = allowed_power;
+    Chassis_PID_Readback.predicted_power = chassis_power_model.total_pred_power;
+    Chassis_PID_Readback.referee_valid_flags = chassis_referee.valid_flags;
+    Chassis_PID_Readback.referee_online = chassis_referee.offline.is_online ? 1U : 0U;
+    Chassis_PID_Readback.using_referee_power = using_referee_power;
 }
 
 static void Chassis_Send_Feedback(const Chassis_Motor_Group_t *c_motor,
