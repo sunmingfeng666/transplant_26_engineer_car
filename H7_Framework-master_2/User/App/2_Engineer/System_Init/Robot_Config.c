@@ -13,12 +13,8 @@
 #include "Arm_MatlabDebug.h"
 #include "usart.h"
 
-Chassis_Motor_Group_t chassis_motors;
-Gimbal_Motor_Group_t  gimbal_motors;
-Shoot_Motor_Group_t   shoot_motors;
 Arm_Motor_Group_t     arm_motors;
 
-BSP_PWM_t trigger_pwm = {&htim4, TIM_CHANNEL_2, PWM_CHANNEL_NORMAL};
 BSP_PWM_t picture_yaw_pwm = {&htim2, TIM_CHANNEL_1, PWM_CHANNEL_NORMAL};
 BSP_PWM_t picture_pitch_pwm = {&htim2, TIM_CHANNEL_3, PWM_CHANNEL_NORMAL};
 
@@ -40,12 +36,9 @@ UART_RX_NODE(&huart7, 0, Arm_MatlabDebug_Rx_Buf[0], Arm_MatlabDebug_Rx_Buf[1],
 
 // 遥控板 USART10 接收底盘板 USART10 回传的固定长度状态反馈帧。
 // 两个缓冲区放在 D2 RAM，因为 DMA 不能访问 H7 的所有内存区域。
-static uint8_t DualBoard_Rx_Buf[2][DUALBOARD_CHASSIS_FRAME_LEN] __attribute__((section(".RAM_D2")));
-UART_RX_NODE(&huart10, DUALBOARD_CHASSIS_FRAME_LEN, DualBoard_Rx_Buf[0], DualBoard_Rx_Buf[1],
-             DUALBOARD_CHASSIS_FRAME_LEN, NULL, DualBoard_UART_Rx_Callback);
-
-CAN_RX_NODE(FDCAN1, 0x201, &chassis_motors.DJI_3508_Chassis[0], DJI_Motor_Resolve);
-OFFLINE_NODE(&chassis_motors.DJI_3508_Chassis[0].offline, MOTOR_OFFLINE_TIME, CHASSIS);
+static uint8_t DualBoard_Rx_Buf[2][DUALBOARD_ENGINEER_FEEDBACK_FRAME_LEN] __attribute__((section(".RAM_D2")));
+UART_RX_NODE(&huart10, DUALBOARD_ENGINEER_FEEDBACK_FRAME_LEN, DualBoard_Rx_Buf[0], DualBoard_Rx_Buf[1],
+             DUALBOARD_ENGINEER_FEEDBACK_FRAME_LEN, NULL, DualBoard_UART_Rx_Callback);
 
 // ================= 工程机械臂 7 个达妙电机自动注册 =================
 // ⚠️ 反馈 CAN ID 与总线分配沿用旧臂主控 DM_H7_Master（2），需按实车接线核对。

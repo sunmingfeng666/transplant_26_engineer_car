@@ -10,27 +10,6 @@
 #include "DM_Motor.h"
 #include "LK_Motor.h"
 
-typedef struct __attribute__((aligned(4))){
-    DJI_MOTOR_DATA_Typedef DJI_3508_Chassis[4];
-    DJI_MOTOR_DATA_Typedef DJI_6020_Steer[4];
-} Chassis_Motor_Group_t;
-
-typedef struct __attribute__((aligned(4))){
-    DJI_MOTOR_DATA_Typedef DJI_3508_Yaw;
-    DM_MOTOR_DATA_Typedef DM4310_Pitch;
-    DM_MOTOR_DATA_Typedef DM4310_Yaw;
-} Gimbal_Motor_Group_t;
-
-typedef struct __attribute__((aligned(4))){
-    DJI_MOTOR_DATA_Typedef DJI_3508_Shoot_L;
-    DJI_MOTOR_DATA_Typedef DJI_3508_Shoot_R;
-    DJI_MOTOR_DATA_Typedef DJI_3508_Shoot_M;
-    DM_MOTOR_DATA_Typedef DM4310_Feed;
-    DJI_MOTOR_DATA_Typedef DJI_3508_Pull;
-    DJI_MOTOR_DATA_Typedef DJI_3508_Travel;
-    DJI_MOTOR_DATA_Typedef DJI_2006_bo;
-} Shoot_Motor_Group_t;
-
 // 工程机械臂电机组：6自由度关节 + 1末端夹爪，全部为达妙(DM)电机。
 // 移植自旧臂主控 DM_H7_Master（2），关节空间控制（无正/逆运动学）。
 // 关节-电机-总线-CAN ID 对应关系（⚠️ 需按实车接线核对）：
@@ -51,13 +30,9 @@ typedef struct __attribute__((aligned(4))){
     DM_MOTOR_DATA_Typedef Terminal_3507;
 } Arm_Motor_Group_t;
 
-extern Chassis_Motor_Group_t chassis_motors;
-extern Gimbal_Motor_Group_t  gimbal_motors;
-extern Shoot_Motor_Group_t   shoot_motors;
 extern Arm_Motor_Group_t     arm_motors;
 
 extern BSP_PWM_t imu_heater_pwm;
-extern BSP_PWM_t trigger_pwm;
 extern BSP_PWM_t picture_yaw_pwm;
 extern BSP_PWM_t picture_pitch_pwm;
 

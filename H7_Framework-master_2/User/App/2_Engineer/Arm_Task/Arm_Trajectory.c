@@ -736,6 +736,9 @@ static const float q_coeffs_self2[6][40][4] = {
     }
 };
 
+/* 存矿/取矿四条轨迹数据量较大，独立放置以保持本文件的索引逻辑清晰。 */
+#include "Arm_StoreTakeTrajectory.inc"
+
 /* 每条轨迹的元信息：系数表 / 时间节点 / 分段数 / 总时长 / 时间缩放。 */
 typedef struct {
     const float *coeffs;    /* 展平为 [6*seg*4] */
@@ -754,6 +757,14 @@ static const Arm_Traj_Meta_t s_traj_meta[ARM_TRAJ_COUNT] = {
                          ARM_TRAJ_SEG_SELF1, 2.4780f, 1.0f},
     [ARM_TRAJ_SELF_2] = {(const float *)q_coeffs_self2,  t_knots_self2,
                          ARM_TRAJ_SEG_SELF2, 2.7510f, 1.0f},
+    [ARM_TRAJ_STORE_1] = {(const float *)q_coeffs_store1, t_knots_store1,
+                          ARM_TRAJ_SEG_STORE1, 0.8400f, 3.5f},
+    [ARM_TRAJ_STORE_2] = {(const float *)q_coeffs_store2, t_knots_store2,
+                          ARM_TRAJ_SEG_STORE2, 0.6120f, 3.5f},
+    [ARM_TRAJ_TAKE_1] = {(const float *)q_coeffs_take1, t_knots_take1,
+                         ARM_TRAJ_SEG_TAKE1, 0.7560f, 2.5f},
+    [ARM_TRAJ_TAKE_2] = {(const float *)q_coeffs_take2, t_knots_take2,
+                         ARM_TRAJ_SEG_TAKE2, 0.9744f, 2.5f},
 };
 
 float Arm_Traj_TotalTime(Arm_Traj_e traj)

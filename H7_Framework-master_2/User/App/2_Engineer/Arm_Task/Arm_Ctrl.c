@@ -386,6 +386,12 @@ void Engineer_Arm_Task(const Arm_Motor_Group_t *feedback,
             s_terminal_prev_online = 0U;
         }
     } else if (feedback->Terminal_3507.offline.is_online) {
+        const Arm_OneClick_Output_t *oneclick_output = Arm_OneClick_GetOutput();
+        uint8_t clamp_close = s_clamp_close;
+        if (oneclick_output != NULL && oneclick_output->active && oneclick_output->clamp_override) {
+            clamp_close = oneclick_output->clamp_close;
+        }
+        Arm_Control_Debug.clamp_close = clamp_close;
         online_mask |= (uint16_t)(1U << 6);
         if (!s_terminal_prev_online) {
             Motor_Mode(&hfdcan3, 0x07U, MIT_MODE, DM_CMD_CLEAR_ERROR);
@@ -393,9 +399,10 @@ void Engineer_Arm_Task(const Arm_Motor_Group_t *feedback,
             s_terminal_prev_online = 1U;
         }
         MIT_Ctrl(&hfdcan3, 0x07U, 0.0f, 0.0f, 0.0f, 0.0f,
-                 s_clamp_close ? ARM_TERMINAL_CLOSE_TORQUE : ARM_TERMINAL_OPEN_TORQUE);
+                 clamp_close ? ARM_TERMINAL_CLOSE_TORQUE : ARM_TERMINAL_OPEN_TORQUE);
     } else {
         fault_mask |= (uint16_t)(1U << 6);
+        Arm_Control_Debug.clamp_close = 0U;
         s_terminal_prev_online = 0U;
         if (retry_due) {
             Motor_Mode(&hfdcan3, 0x07U, MIT_MODE, DM_CMD_CLEAR_ERROR);

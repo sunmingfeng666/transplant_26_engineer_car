@@ -6,6 +6,8 @@
 #include "VT13.h"
 #include "Comm_DualBoard.h"
 #include "Picture_Servo.h"
+#include "Arm_OneClick.h"
+#include "Arm_JointController.h"
 #include "usart.h"
 
 #define RC_ROCKER_XY_COEF 0.004f
@@ -25,8 +27,6 @@ static Subscriber_t *dbus_sub;
 static Subscriber_t *vt13_sub;
 
 static Publisher_t *chassis_cmd_pub;
-static Publisher_t *gimbal_cmd_pub;
-static Publisher_t *shoot_cmd_pub;
 static Publisher_t *picture_cmd_pub;
 
 static System_State_t cmd_sys_state;
@@ -34,8 +34,6 @@ static DBUS_Typedef dbus_data;
 static VT13_Typedef vt13_data;
 
 static Chassis_Cmd_t chassis_cmd = {0};
-static Gimbal_Cmd_t gimbal_cmd = {0};
-static Shoot_Cmd_t shoot_cmd = {0};
 static Picture_Cmd_t picture_cmd = {
     .lift = 0,
     .transverse = 0,
@@ -48,15 +46,22 @@ volatile Chassis_Cmd_t Chassis_Debug_Readback __attribute__((used)) = {0};
 volatile uint8_t Chassis_Debug_RemoteOnline __attribute__((used)) = 0U;
 
 static void Cmd_Handle_Safe_Mode(void);
+static void Cmd_Parse_DualBoard_Feedback(void);
 static void Cmd_Update_Remote_Ctrl(void);
 static void Cmd_Update_Mouse_Key(void);
 static void Cmd_Update_Picture_Ctrl(void);
+static void Cmd_Update_OneClick_Request(void);
 static void Cmd_Update_Chassis_Debug(void);
 static void Cmd_DualBoard_Sync(void);
 static DualBoard_Chassis_Mode_e Cmd_To_DualBoard_Mode(Chassis_Mode_e mode);
 static int32_t Cmd_Limit_Int32(int32_t value, int32_t min_value, int32_t max_value);
 static uint16_t Cmd_Limit_Servo_Us(int32_t value);
 static uint8_t KeyActive(uint8_t key_state);
+
+static uint8_t mechanism_action_seq;
+static uint8_t last_action_keys;
+static uint8_t last_vt_action_keys;
+static uint8_t oneclick_override_last;
 
 void Robot_Cmd_Init(void)
 {
@@ -65,11 +70,13 @@ void Robot_Cmd_Init(void)
     vt13_sub = SubRegister("vt13_data", sizeof(VT13_Typedef));
 
     chassis_cmd_pub = PubRegister("chassis_cmd", &chassis_cmd, sizeof(Chassis_Cmd_t));
-    gimbal_cmd_pub = PubRegister("gimbal_cmd", &gimbal_cmd, sizeof(Gimbal_Cmd_t));
-    shoot_cmd_pub = PubRegister("shoot_cmd", &shoot_cmd, sizeof(Shoot_Cmd_t));
     picture_cmd_pub = PubRegister("picture_cmd", &picture_cmd, sizeof(Picture_Cmd_t));
 
     Picture_Servo_Init();
+    mechanism_action_seq = 0U;
+    last_action_keys = 0U;
+    last_vt_action_keys = 0U;
+    oneclick_override_last = 0U;
 }
 
 void Robot_Cmd_Update(void)
@@ -78,21 +85,45 @@ void Robot_Cmd_Update(void)
     if (dbus_sub) SubGetMessage(dbus_sub, &dbus_data);
     if (vt13_sub) SubGetMessage(vt13_sub, &vt13_data);
 
+    // 解析通信层交付的整车反馈帧，写入 B2B_Engineer_Feedback，供下方决策闭环使用。
+    Cmd_Parse_DualBoard_Feedback();
+
     System_State_Report_Remote(vt13_data.offline.is_online || dbus_data.offline.is_online);
-    (void)DualBoard_Chassis_Feedback_Is_Online();
+    {
+        const uint8_t required_online = DUALBOARD_MECHANISM_LIFT_ONLINE |
+                                        DUALBOARD_MECHANISM_TRANSVERSE_ONLINE |
+                                        DUALBOARD_MECHANISM_STORE_ONLINE;
+        const uint8_t peer_online = DualBoard_Engineer_Feedback_Is_Online() ? 1U : 0U;
+        const uint8_t peer_ready = (peer_online &&
+                                    (B2B_Engineer_Feedback.mechanism_online_bits & required_online) == required_online &&
+                                    (B2B_Engineer_Feedback.action_bits & DUALBOARD_ACTION_FAULT) == 0U) ? 1U : 0U;
+        const uint8_t normal_done_bits = DUALBOARD_ACTION_LIFT_DONE |
+                                         DUALBOARD_ACTION_TRANSVERSE_DONE |
+                                         DUALBOARD_ACTION_STORE_DONE;
+        const uint8_t completion_valid =
+            (((B2B_Engineer_Feedback.action_bits & normal_done_bits) == normal_done_bits) ||
+             (B2B_Engineer_Feedback.action_bits & DUALBOARD_ACTION_HOMING_DONE)) ? 1U : 0U;
+        const uint8_t action_completed = (peer_online &&
+                                          completion_valid &&
+                                          B2B_Engineer_Feedback.completed_action_seq == mechanism_action_seq) ? 1U : 0U;
+        Arm_OneClick_SetMechanismState(peer_ready, action_completed,
+                                       (uint8_t)(!peer_online ||
+                                           (B2B_Engineer_Feedback.action_bits & DUALBOARD_ACTION_FAULT)));
+    }
 
     if (cmd_sys_state.global_mode == GLOBAL_SAFE_LOCK ||
         cmd_sys_state.global_mode == GLOBAL_MODULE_ERROR ||
         cmd_sys_state.global_mode == GLOBAL_STANDBY) {
         Cmd_Handle_Safe_Mode();
+        if (Arm_Control_Debug.oneclick_active) Arm_Control_Config.oneclick_abort = 1U;
         Cmd_Update_Chassis_Debug();
         PubPushMessage(chassis_cmd_pub, &chassis_cmd);
-        PubPushMessage(gimbal_cmd_pub, &gimbal_cmd);
-        PubPushMessage(shoot_cmd_pub, &shoot_cmd);
         PubPushMessage(picture_cmd_pub, &picture_cmd);
         Cmd_DualBoard_Sync();
         return;
     }
+
+    Cmd_Update_OneClick_Request();
 
     if (dbus_data.Ctrl_Mode == 1) {
         Cmd_Update_Mouse_Key();
@@ -103,8 +134,6 @@ void Robot_Cmd_Update(void)
     Cmd_Update_Chassis_Debug();
 
     PubPushMessage(chassis_cmd_pub, &chassis_cmd);
-    PubPushMessage(gimbal_cmd_pub, &gimbal_cmd);
-    PubPushMessage(shoot_cmd_pub, &shoot_cmd);
     PubPushMessage(picture_cmd_pub, &picture_cmd);
 
     Cmd_DualBoard_Sync();
@@ -113,22 +142,69 @@ void Robot_Cmd_Update(void)
 static void Cmd_Handle_Safe_Mode(void)
 {
     chassis_cmd.mode = CHASSIS_CMD_SAFE;
-    gimbal_cmd.mode = GIMBAL_CMD_SAFE;
-    shoot_cmd.mode = SHOOT_CMD_SAFE;
 
     chassis_cmd.target_vx = 0.0f;
     chassis_cmd.target_vy = 0.0f;
     chassis_cmd.target_vw = 0.0f;
     chassis_cmd.offset_angle = 0.0f;
 
-    gimbal_cmd.target_pitch = 0.0f;
-    gimbal_cmd.target_yaw = 0.0f;
-
-    shoot_cmd.friction_rpm = 0.0f;
-    shoot_cmd.trigger_single = false;
-    shoot_cmd.trigger_auto = false;
-
     picture_cmd.enable = 0U;
+}
+
+// 取通信层交付的原始反馈帧并映射到 B2B_Engineer_Feedback（原 Comm 层 Parse_Engineer_Feedback_Frame 逻辑）。
+static void Cmd_Parse_DualBoard_Feedback(void)
+{
+    uint8_t buf[DUALBOARD_ENGINEER_FEEDBACK_FRAME_LEN];
+    uint16_t len = 0;
+
+    if (!DualBoard_Take_Feedback_Frame(buf, sizeof(buf), &len)) return;
+    if (len != sizeof(B2B_Engineer_Feedback_Frame_t)) return;
+
+    const B2B_Engineer_Feedback_Frame_t *f = (const B2B_Engineer_Feedback_Frame_t *)buf;
+    B2B_Engineer_Feedback.status = (DualBoard_Chassis_Feedback_Status_e)f->status;
+    B2B_Engineer_Feedback.chassis_online_bits = f->chassis_online_bits;
+    B2B_Engineer_Feedback.mechanism_online_bits = f->mechanism_online_bits;
+    B2B_Engineer_Feedback.limit_bits = f->limit_bits;
+    B2B_Engineer_Feedback.action_bits = f->action_bits;
+    B2B_Engineer_Feedback.error_code = f->error_code;
+    B2B_Engineer_Feedback.completed_action_seq = f->completed_action_seq;
+    B2B_Engineer_Feedback.picture_lift_pos = f->picture_lift_pos;
+    B2B_Engineer_Feedback.picture_transverse_pos = f->picture_transverse_pos;
+    B2B_Engineer_Feedback.store_pos_mrad = f->store_pos_mrad;
+    B2B_Engineer_Feedback.last_update_ms = HAL_GetTick();
+    B2B_Engineer_Feedback.is_online = true;
+}
+
+static void Cmd_Update_OneClick_Request(void)
+{
+    uint8_t keys = 0U;
+    uint8_t vt_keys = 0U;
+    uint8_t rising;
+
+    if (KeyActive(dbus_data.KeyBoard.Shift) && KeyActive(dbus_data.KeyBoard.Z)) keys |= 1U << 0;
+    if (KeyActive(dbus_data.KeyBoard.Shift) && KeyActive(dbus_data.KeyBoard.X)) keys |= 1U << 1;
+    if (KeyActive(dbus_data.KeyBoard.Ctrl) && KeyActive(dbus_data.KeyBoard.X)) keys |= 1U << 2;
+    if (KeyActive(dbus_data.KeyBoard.Ctrl) && KeyActive(dbus_data.KeyBoard.C)) keys |= 1U << 3;
+    if (KeyActive(dbus_data.KeyBoard.Ctrl) && KeyActive(dbus_data.KeyBoard.V)) keys |= 1U << 4;
+    if (KeyActive(dbus_data.KeyBoard.Shift) && KeyActive(dbus_data.KeyBoard.R)) keys |= 1U << 5;
+    if (vt13_data.Remote.fn_1) vt_keys |= 1U << 0;
+    if (vt13_data.Remote.fn_2) vt_keys |= 1U << 1;
+
+    rising = (uint8_t)(keys & (uint8_t)~last_action_keys);
+    rising |= (uint8_t)((vt_keys & (uint8_t)~last_vt_action_keys) & 0x03U);
+    last_action_keys = keys;
+    last_vt_action_keys = vt_keys;
+
+    if (Arm_Control_Debug.oneclick_active) return;
+    if (rising & (1U << 0)) Arm_Control_Config.oneclick_request = ARM_ONECLICK_STORE;
+    else if (rising & (1U << 1)) Arm_Control_Config.oneclick_request = ARM_ONECLICK_TAKE;
+    else if (rising & (1U << 2)) Arm_Control_Config.oneclick_request = ARM_ONECLICK_UNFOLD;
+    else if (rising & (1U << 3)) Arm_Control_Config.oneclick_request = ARM_ONECLICK_FOLD;
+    else if (rising & (1U << 4)) {
+        Arm_Control_Config.oneclick_request =
+            (Arm_Control_Debug.oneclick_id == ARM_ONECLICK_SELF_1) ? ARM_ONECLICK_SELF_2 : ARM_ONECLICK_SELF_1;
+    }
+    else if (rising & (1U << 5)) Arm_Control_Config.oneclick_request = ARM_ONECLICK_RESET;
 }
 
 static void Cmd_Update_Remote_Ctrl(void)
@@ -208,13 +284,41 @@ static void Cmd_Update_Chassis_Debug(void)
 
 static void Cmd_DualBoard_Sync(void)
 {
+    const Arm_OneClick_Output_t *action = Arm_OneClick_GetOutput();
+    int32_t lift = picture_cmd.lift;
+    int32_t transverse = picture_cmd.transverse;
+    uint8_t store_slot = Arm_Control_Config.oneclick_store_slot;
+    DualBoard_Mechanism_Action_e mechanism_action =
+        picture_cmd.enable ? DUALBOARD_ACTION_HOLD : DUALBOARD_ACTION_STOP_ALL;
+    uint8_t action_override = 0U;
+
+    if (chassis_cmd.mode == CHASSIS_CMD_SAFE) {
+        mechanism_action = DUALBOARD_ACTION_STOP_ALL;
+    } else if (action != NULL && action->active && action->picture_override) {
+        lift = action->picture_lift;
+        transverse = action->picture_transverse;
+        store_slot = action->store_slot;
+        mechanism_action = (DualBoard_Mechanism_Action_e)action->mechanism_action;
+        action_override = 1U;
+        Picture_Servo_Set(action->yaw_us, action->pitch_us);
+    } else if (action != NULL && action->mechanism_action == DUALBOARD_ACTION_STOP_ALL) {
+        mechanism_action = DUALBOARD_ACTION_STOP_ALL;
+    }
+
+    if (action_override && !oneclick_override_last) mechanism_action_seq++;
+    oneclick_override_last = action_override;
+
     DualBoard_Send_Engineer(&huart10,
                             Cmd_To_DualBoard_Mode(chassis_cmd.mode),
                             chassis_cmd.target_vx * 1000.0f,
                             chassis_cmd.target_vy * 1000.0f,
                             chassis_cmd.target_vw * 1000.0f,
-                            picture_cmd.lift,
-                            picture_cmd.transverse);
+                            lift,
+                            transverse,
+                            mechanism_action,
+                            store_slot,
+                            mechanism_action_seq,
+                            Arm_Control_Debug.clamp_close ? DUALBOARD_UI_CLAMP_CLOSED : 0U);
 }
 
 static DualBoard_Chassis_Mode_e Cmd_To_DualBoard_Mode(Chassis_Mode_e mode)

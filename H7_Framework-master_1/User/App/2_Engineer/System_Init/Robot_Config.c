@@ -13,11 +13,8 @@
 #include "Power_CAP.h"
 
 Chassis_Motor_Group_t chassis_motors;
-Gimbal_Motor_Group_t  gimbal_motors;
-Shoot_Motor_Group_t   shoot_motors;
 Picture_Motor_Group_t picture_motors;
-
-BSP_PWM_t trigger_pwm = {&htim4, TIM_CHANNEL_2, PWM_CHANNEL_NORMAL};
+Store_Motor_Group_t store_motors;
 
 // 保留新框架原有遥控接收：DBUS 使用 UART5，VT13 使用 UART7。
 UART_RX_NODE(&huart5, 18, DBUS_RX_DATA, NULL, 18, &DBUS, DBUS_Resolved);
@@ -51,3 +48,7 @@ CAN_RX_NODE(FDCAN3, 0x204, &picture_motors.DJI_2006_Lift, DJI_Motor_Resolve);
 OFFLINE_NODE(&picture_motors.DJI_2006_Lift.offline, MOTOR_OFFLINE_TIME, GROUP_NONE);
 CAN_RX_NODE(FDCAN3, 0x205, &picture_motors.DJI_2006_Transverse, DJI_Motor_Resolve);
 OFFLINE_NODE(&picture_motors.DJI_2006_Transverse.offline, MOTOR_OFFLINE_TIME, GROUP_NONE);
+
+// 存矿 DM4310 使用位置速度模式：命令基 ID 0x03，反馈 ID 0x2C。
+CAN_RX_NODE(FDCAN2, 0x2C, &store_motors.DM4310_Store, DM_Standard_Resolve);
+OFFLINE_NODE(&store_motors.DM4310_Store.offline, MOTOR_OFFLINE_TIME, GROUP_NONE);

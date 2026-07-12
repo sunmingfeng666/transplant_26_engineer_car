@@ -22,15 +22,17 @@ static float AbsFloat(float val)
 
 uint8_t MecanumInit(mecanumInit_typdef *mecanumInitT)
 {
-    mecanumInitT->deceleration_ratio = 3591/187;
+    // 工程车实车麦轮几何参数（与原 Chassis_Ctrl.c 内 Chassis_Resolve 逐位一致）。
+    // 减速比用精确小数 0.052075f（≈1/19.2），不能写成整数除法 3591/187（会被截断成 19）。
+    mecanumInitT->deceleration_ratio = 0.052075f;
     mecanumInitT->max_vw_speed       = 50000;
     mecanumInitT->max_vx_speed       = 50000;
     mecanumInitT->max_vy_speed       = 50000;
     mecanumInitT->max_wheel_ramp     = 8000;
     mecanumInitT->rotate_x_offset    = 00.0f;
     mecanumInitT->rotate_y_offset    = 00.0f;
-    mecanumInitT->wheelbase          = 300;
-    mecanumInitT->wheeltrack         = 300;
+    mecanumInitT->wheelbase          = 360;
+    mecanumInitT->wheeltrack         = 380;
     mecanumInitT->wheel_perimeter    = 478;
 
     mecanumInitT->raid_fr = ((mecanumInitT->wheelbase + mecanumInitT->wheeltrack) / 2.0f -
@@ -46,36 +48,26 @@ uint8_t MecanumInit(mecanumInit_typdef *mecanumInitT)
     return 0;
 }
 
+// 工程车麦轮逆解算：底盘速度 -> 四个 3508 目标转速(rpm)。
+// vx_temp / vy_temp 单位 mm/s，vr 单位 mrad/s（串口帧用整数传输，此处内部换算）。
+// 逻辑与原 Chassis_Ctrl.c 的 Chassis_Resolve 逐位一致，不含缓启动/转向补偿。
 void MecanumResolve(float *wheel_rpm, float vx_temp, float vy_temp, float vr, mecanumInit_typdef *mecanumInit_t)
 {
-    static float SLOW_START = 0.0f;
-    float MAX_POWER = 45.0f;
+    if (wheel_rpm == NULL || mecanumInit_t == NULL) return;
 
-    float vx = ClampFloat(vx_temp, -mecanumInit_t->max_vx_speed, mecanumInit_t->max_vx_speed);
-    float vy = ClampFloat(vy_temp, -mecanumInit_t->max_vy_speed, mecanumInit_t->max_vy_speed);
-    float vw = ClampFloat(vr, -mecanumInit_t->max_vw_speed, mecanumInit_t->max_vw_speed);
+    // mrad/s -> deg/s，再乘旋转半径得到等效轮端旋转分量。
+    // 57.3 是旧工程沿用的 rad->deg 近似系数，运算顺序保持不变以确保数值一致。
+    float vw_deg_s = vr / 1000.0f * 57.3f;
+    float rot = vw_deg_s * mecanumInit_t->raid_fr;
 
-    if(vx != 0 || vy != 0 || vw != 0)
-    {
-        SLOW_START += 0.002f;
-        float SLOW_START_MAX = CHASSIS_GET_MAX_TARGET(MAX_POWER);
-        if(SLOW_START > SLOW_START_MAX)
-        {
-            SLOW_START = SLOW_START_MAX;
-        }
-        vx *= ( 1 - MATH_Limit_float(3000, 0, MATH_ABS_float(theta_chassis)) / 3000.0f );
-        vy *= ( 1 - MATH_Limit_float(3000, 0, MATH_ABS_float(theta_chassis)) / 3000.0f );
+    // 轮序和符号沿用旧工程车底盘代码。
+    // 如果实车方向反了，优先调整这里，不改串口协议。
+    wheel_rpm[0] = ( vx_temp + vy_temp + rot) * mecanumInit_t->wheel_rpm_ratio;
+    wheel_rpm[1] = (-vx_temp + vy_temp + rot) * mecanumInit_t->wheel_rpm_ratio;
+    wheel_rpm[2] = (-vx_temp - vy_temp + rot) * mecanumInit_t->wheel_rpm_ratio;
+    wheel_rpm[3] = ( vx_temp - vy_temp + rot) * mecanumInit_t->wheel_rpm_ratio;
 
-        vx *= SLOW_START;
-        vy *= SLOW_START;
-        vw *= SLOW_START;
-    }
-
-    wheel_rpm[0] = (-vx + vy + vw * mecanumInit_t->raid_fr) * mecanumInit_t->wheel_rpm_ratio;
-    wheel_rpm[1] = ( vx + vy + vw * mecanumInit_t->raid_fl) * mecanumInit_t->wheel_rpm_ratio;
-    wheel_rpm[2] = ( vx - vy + vw * mecanumInit_t->raid_bl) * mecanumInit_t->wheel_rpm_ratio;
-    wheel_rpm[3] = (-vx - vy + vw * mecanumInit_t->raid_br) * mecanumInit_t->wheel_rpm_ratio;
-
+    // 保持运动方向不变，把四个轮子的目标转速整体压到上限内。
     float max_abs = 0.0f;
     for (uint8_t i = 0; i < 4; i++) {
         float a = AbsFloat(wheel_rpm[i]);
@@ -86,6 +78,12 @@ void MecanumResolve(float *wheel_rpm, float vx_temp, float vy_temp, float vr, me
         for (uint8_t i = 0; i < 4; i++) {
             wheel_rpm[i] *= rate;
         }
+    }
+
+    // 再逐轮硬限幅到 ±max_wheel_ramp，兜住浮点缩放后的微小越界。
+    for (uint8_t i = 0; i < 4; i++) {
+        wheel_rpm[i] = ClampFloat(wheel_rpm[i], -(float)mecanumInit_t->max_wheel_ramp,
+                                  (float)mecanumInit_t->max_wheel_ramp);
     }
 }
 

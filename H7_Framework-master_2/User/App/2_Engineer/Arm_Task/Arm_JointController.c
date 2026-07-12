@@ -37,6 +37,8 @@ volatile Arm_Control_Config_t Arm_Control_Config = {
             .min_rad = -1.59f, .max_rad = 1.60f,
         },
     },
+    // 仅 RESET 动作用此默认槽位；存/取矿(composite)会按占用位图自动选槽并覆盖此值。
+    .oneclick_store_slot = 1U,
 };
 
 volatile Arm_Control_Debug_t Arm_Control_Debug = {

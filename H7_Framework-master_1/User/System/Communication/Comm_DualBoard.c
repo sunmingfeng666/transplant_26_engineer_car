@@ -7,14 +7,17 @@
 #define DUALBOARD_SOF 0xA5U
 #define DUALBOARD_TAIL 0x5AU
 #define DUALBOARD_VERSION 1U
+#define DUALBOARD_ENGINEER_VERSION 2U
 #define CHASSIS_CHECKSUM_INDEX 10U
-#define ENGINEER_CHECKSUM_INDEX 18U
+#define ENGINEER_CHECKSUM_INDEX 22U
+#define ENGINEER_FEEDBACK_CHECKSUM_INDEX 22U
 
 B2B_Tx_t Tx_Data = {0};
 B2B_Rx_t Rx_Data = {0};
 B2B_Chassis_Cmd_t B2B_Chassis_Cmd = {0};
 B2B_Picture_Cmd_t B2B_Picture_Cmd = {0};
 B2B_Chassis_Feedback_t B2B_Chassis_Feedback = {0};
+B2B_Engineer_Feedback_t B2B_Engineer_Feedback = {0};
 
 typedef struct {
     uint8_t buf[DUALBOARD_MAX_PAYLOAD];
@@ -40,9 +43,16 @@ static uint16_t uart_rx_len = 0;
 static uint8_t chassis_tx_seq = 0;
 static uint8_t engineer_tx_seq = 0;
 static uint8_t chassis_feedback_tx_seq = 0;
+static uint8_t engineer_feedback_tx_seq = 0;
 static B2B_Chassis_Frame_t chassis_tx_frame;
 static B2B_Engineer_Frame_t engineer_tx_frame;
 static B2B_Chassis_Frame_t chassis_feedback_tx_frame;
+static B2B_Engineer_Feedback_Frame_t engineer_feedback_tx_frame;
+
+_Static_assert(sizeof(B2B_Engineer_Frame_t) == DUALBOARD_ENGINEER_FRAME_LEN,
+               "B2B engineer command frame size mismatch");
+_Static_assert(sizeof(B2B_Engineer_Feedback_Frame_t) == DUALBOARD_ENGINEER_FEEDBACK_FRAME_LEN,
+               "B2B engineer feedback frame size mismatch");
 
 static int16_t Float_To_Int16(float value)
 {
@@ -73,52 +83,39 @@ static bool Engineer_Frame_Is_Valid(const B2B_Engineer_Frame_t *frame)
 {
     if (frame == NULL) return false;
     if (frame->sof != DUALBOARD_SOF || frame->tail != DUALBOARD_TAIL) return false;
-    if (frame->version != DUALBOARD_VERSION) return false;
+    if (frame->version != DUALBOARD_ENGINEER_VERSION) return false;
     return frame->checksum == Frame_Checksum(frame, ENGINEER_CHECKSUM_INDEX);
 }
 
-static void Update_Chassis_Cmd(uint8_t mode, int16_t vx_mm_s, int16_t vy_mm_s, int16_t vw_mrad_s, uint8_t seq)
-{
-    if (mode > DUALBOARD_CHASSIS_SPIN) return;
+// 命令帧收件箱：通信层收到并通过校验的原始帧暂存于此，等 App 命令层取走解析。
+// 单缓冲、后到覆盖先到（控制场景取最新命令即可），pending 最后置位保证数据完整。
+static uint8_t  cmd_inbox_buf[DUALBOARD_MAX_PAYLOAD];
+static uint16_t cmd_inbox_len = 0;
+static volatile uint8_t cmd_inbox_pending = 0;
 
-    B2B_Chassis_Cmd.mode = (DualBoard_Chassis_Mode_e)mode;
-    B2B_Chassis_Cmd.vx_mm_s = (float)vx_mm_s;
-    B2B_Chassis_Cmd.vy_mm_s = (float)vy_mm_s;
-    B2B_Chassis_Cmd.vw_mrad_s = (float)vw_mrad_s;
-    B2B_Chassis_Cmd.last_seq = seq;
-    B2B_Chassis_Cmd.last_update_ms = HAL_GetTick();
-    B2B_Chassis_Cmd.is_online = true;
+static void Inbox_Store(const uint8_t *buf, uint16_t len)
+{
+    if (buf == NULL || len == 0U || len > sizeof(cmd_inbox_buf)) return;
+    memcpy(cmd_inbox_buf, buf, len);
+    cmd_inbox_len = len;
+    cmd_inbox_pending = 1U;
 }
 
-static void Parse_Chassis_Frame(const B2B_Chassis_Frame_t *frame)
+uint8_t DualBoard_Take_Cmd_Frame(uint8_t *out, uint16_t out_cap, uint16_t *out_len)
 {
-    if (!Chassis_Frame_Is_Valid(frame)) return;
+    if (out == NULL || out_len == NULL) return 0U;
 
-    if (frame->mode == DUALBOARD_FRAME_TYPE_FEEDBACK) {
-        B2B_Chassis_Feedback.status = (DualBoard_Chassis_Feedback_Status_e)frame->vx_mm_s;
-        B2B_Chassis_Feedback.motor_online_bits = (uint8_t)frame->vy_mm_s;
-        B2B_Chassis_Feedback.error_code = frame->vw_mrad_s;
-        B2B_Chassis_Feedback.last_seq = frame->seq;
-        B2B_Chassis_Feedback.last_update_ms = HAL_GetTick();
-        B2B_Chassis_Feedback.is_online = true;
-        return;
+    uint32_t primask = __get_PRIMASK();
+    __disable_irq();
+    uint8_t got = 0U;
+    if (cmd_inbox_pending && cmd_inbox_len <= out_cap) {
+        memcpy(out, cmd_inbox_buf, cmd_inbox_len);
+        *out_len = cmd_inbox_len;
+        cmd_inbox_pending = 0U;
+        got = 1U;
     }
-
-    Update_Chassis_Cmd(frame->mode, frame->vx_mm_s, frame->vy_mm_s, frame->vw_mrad_s, frame->seq);
-}
-
-static void Parse_Engineer_Frame(const B2B_Engineer_Frame_t *frame)
-{
-    if (!Engineer_Frame_Is_Valid(frame)) return;
-    if (frame->mode > DUALBOARD_CHASSIS_SPIN) return;
-
-    Update_Chassis_Cmd(frame->mode, frame->vx_mm_s, frame->vy_mm_s, frame->vw_mrad_s, frame->seq);
-
-    B2B_Picture_Cmd.picture_lift = frame->picture_lift;
-    B2B_Picture_Cmd.picture_transverse = frame->picture_transverse;
-    B2B_Picture_Cmd.last_seq = frame->seq;
-    B2B_Picture_Cmd.last_update_ms = HAL_GetTick();
-    B2B_Picture_Cmd.is_online = true;
+    if (primask == 0U) __enable_irq();
+    return got;
 }
 
 void DualBoard_Comm_Init(void)
@@ -128,6 +125,9 @@ void DualBoard_Comm_Init(void)
     memset(&B2B_Chassis_Cmd, 0, sizeof(B2B_Chassis_Cmd));
     memset(&B2B_Picture_Cmd, 0, sizeof(B2B_Picture_Cmd));
     memset(&B2B_Chassis_Feedback, 0, sizeof(B2B_Chassis_Feedback));
+    memset(&B2B_Engineer_Feedback, 0, sizeof(B2B_Engineer_Feedback));
+    cmd_inbox_len = 0;
+    cmd_inbox_pending = 0U;
 }
 
 uint8_t DualBoard_Send(Comm_Link_e link, void *data_ptr, uint16_t len)
@@ -178,13 +178,18 @@ uint8_t DualBoard_Send_Engineer(UART_HandleTypeDef *huart,
                                 float vy_mm_s,
                                 float vw_mrad_s,
                                 int32_t picture_lift,
-                                int32_t picture_transverse)
+                                int32_t picture_transverse,
+                                DualBoard_Mechanism_Action_e mechanism_action,
+                                uint8_t store_slot,
+                                uint8_t action_seq,
+                                uint8_t ui_flags)
 {
     if (huart == NULL) return 1U;
     if (huart->gState != HAL_UART_STATE_READY) return 2U;
+    if (mechanism_action > DUALBOARD_ACTION_CLEAR_FAULT || store_slot > 3U) return 1U;
 
     engineer_tx_frame.sof = DUALBOARD_SOF;
-    engineer_tx_frame.version = DUALBOARD_VERSION;
+    engineer_tx_frame.version = DUALBOARD_ENGINEER_VERSION;
     engineer_tx_frame.seq = engineer_tx_seq++;
     engineer_tx_frame.mode = (uint8_t)mode;
     engineer_tx_frame.vx_mm_s = Float_To_Int16(vx_mm_s);
@@ -192,11 +197,46 @@ uint8_t DualBoard_Send_Engineer(UART_HandleTypeDef *huart,
     engineer_tx_frame.vw_mrad_s = Float_To_Int16(vw_mrad_s);
     engineer_tx_frame.picture_lift = picture_lift;
     engineer_tx_frame.picture_transverse = picture_transverse;
+    engineer_tx_frame.mechanism_action = (uint8_t)mechanism_action;
+    engineer_tx_frame.store_slot = store_slot;
+    engineer_tx_frame.action_seq = action_seq;
+    engineer_tx_frame.ui_flags = ui_flags;
     engineer_tx_frame.checksum = 0U;
     engineer_tx_frame.tail = DUALBOARD_TAIL;
     engineer_tx_frame.checksum = Frame_Checksum(&engineer_tx_frame, ENGINEER_CHECKSUM_INDEX);
 
     return (HAL_UART_Transmit(huart, (uint8_t *)&engineer_tx_frame, sizeof(engineer_tx_frame), 2U) == HAL_OK) ? 0U : 2U;
+}
+
+uint8_t DualBoard_Send_Engineer_Feedback(UART_HandleTypeDef *huart,
+                                         const B2B_Engineer_Feedback_t *feedback)
+{
+    if (huart == NULL || feedback == NULL) return 1U;
+    if (huart->gState != HAL_UART_STATE_READY) return 2U;
+
+    engineer_feedback_tx_frame.sof = DUALBOARD_SOF;
+    engineer_feedback_tx_frame.version = DUALBOARD_ENGINEER_VERSION;
+    engineer_feedback_tx_frame.seq = engineer_feedback_tx_seq++;
+    engineer_feedback_tx_frame.type = DUALBOARD_FRAME_TYPE_ENGINEER_FEEDBACK;
+    engineer_feedback_tx_frame.status = (uint8_t)feedback->status;
+    engineer_feedback_tx_frame.chassis_online_bits = feedback->chassis_online_bits;
+    engineer_feedback_tx_frame.mechanism_online_bits = feedback->mechanism_online_bits;
+    engineer_feedback_tx_frame.limit_bits = feedback->limit_bits;
+    engineer_feedback_tx_frame.action_bits = feedback->action_bits;
+    engineer_feedback_tx_frame.error_code = feedback->error_code;
+    engineer_feedback_tx_frame.completed_action_seq = feedback->completed_action_seq;
+    engineer_feedback_tx_frame.picture_lift_pos = feedback->picture_lift_pos;
+    engineer_feedback_tx_frame.picture_transverse_pos = feedback->picture_transverse_pos;
+    engineer_feedback_tx_frame.store_pos_mrad = feedback->store_pos_mrad;
+    engineer_feedback_tx_frame.checksum = 0U;
+    engineer_feedback_tx_frame.tail = DUALBOARD_TAIL;
+    engineer_feedback_tx_frame.checksum =
+        Frame_Checksum(&engineer_feedback_tx_frame, ENGINEER_FEEDBACK_CHECKSUM_INDEX);
+
+    // 中断发送，避免在 1kHz 控制任务里阻塞(轮询发 24B@115200 约 2ms)。
+    // 帧缓冲为静态，gState 就绪判断已防重入/覆盖。
+    return (HAL_UART_Transmit_IT(huart, (uint8_t *)&engineer_feedback_tx_frame,
+                                 sizeof(engineer_feedback_tx_frame)) == HAL_OK) ? 0U : 2U;
 }
 
 uint8_t DualBoard_Send_Chassis_Feedback(UART_HandleTypeDef *huart,
@@ -246,6 +286,16 @@ bool DualBoard_Chassis_Feedback_Is_Online(void)
     if (!B2B_Chassis_Feedback.is_online) return false;
     if ((HAL_GetTick() - B2B_Chassis_Feedback.last_update_ms) > DUALBOARD_CHASSIS_TIMEOUT_MS) {
         B2B_Chassis_Feedback.is_online = false;
+        return false;
+    }
+    return true;
+}
+
+bool DualBoard_Engineer_Feedback_Is_Online(void)
+{
+    if (!B2B_Engineer_Feedback.is_online) return false;
+    if ((HAL_GetTick() - B2B_Engineer_Feedback.last_update_ms) > DUALBOARD_CHASSIS_TIMEOUT_MS) {
+        B2B_Engineer_Feedback.is_online = false;
         return false;
     }
     return true;
@@ -312,13 +362,21 @@ void DualBoard_UART_Rx(uint8_t *Buff, uint16_t Size)
 {
     if (Buff == NULL || Size == 0U) return;
 
+    // 通信层只做完整性校验+入库，不解析业务字段。解析交给 App 命令层。
+    // 24B：工程车命令帧或整车反馈帧。反馈帧本板(执行板)不消费，直接丢弃。
     if (Size == sizeof(B2B_Engineer_Frame_t)) {
-        Parse_Engineer_Frame((const B2B_Engineer_Frame_t *)Buff);
+        if (Buff[3] == DUALBOARD_FRAME_TYPE_ENGINEER_FEEDBACK) return;
+        if (Engineer_Frame_Is_Valid((const B2B_Engineer_Frame_t *)Buff)) {
+            Inbox_Store(Buff, Size);
+        }
         return;
     }
 
+    // 12B：旧版底盘命令帧。
     if (Size == sizeof(B2B_Chassis_Frame_t)) {
-        Parse_Chassis_Frame((const B2B_Chassis_Frame_t *)Buff);
+        if (Chassis_Frame_Is_Valid((const B2B_Chassis_Frame_t *)Buff)) {
+            Inbox_Store(Buff, Size);
+        }
         return;
     }
 
