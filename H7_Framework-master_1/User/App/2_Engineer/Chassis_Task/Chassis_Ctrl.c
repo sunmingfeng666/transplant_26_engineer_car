@@ -43,6 +43,7 @@ typedef struct {
 
 // 在线调 PID：直接改 chassis_ctrl.speed_pid[i].Kp/Ki/Kd，下一控制周期(1kHz)即生效。
 Engineer_Chassis_Ctrl_t chassis_ctrl __attribute__((used));
+volatile Engineer_Chassis_Speed_t Engineer_Chassis_Speed[4] = {0};
 static mecanumInit_typdef chassis_mecanum;   // 麦轮解算参数，Init 时由 MecanumInit 填充。
 static Power_Ctrl_t chassis_power_model;
 static Motor_Power_State_t chassis_power_states[4];
@@ -55,6 +56,7 @@ static void Chassis_Clear_Output(void);
 static void Chassis_Record_Feedback(const Chassis_Motor_Group_t *c_motor,
                                     DualBoard_Chassis_Feedback_Status_e status,
                                     int16_t error_code);
+static void Chassis_Update_Speed_Monitor(const Chassis_Motor_Group_t *c_motor);
 static uint8_t Chassis_Get_Motor_Online_Bits(const Chassis_Motor_Group_t *c_motor);
 static float Chassis_Get_Allowed_Power(const Referee_Data_t *referee, uint8_t *using_referee_power);
 static float Limit_Finite(float value, float min_value, float max_value, float fallback);
@@ -71,8 +73,6 @@ uint8_t Engineer_Chassis_Init(void)
     Power_Ctrl_Init(&chassis_power_model);
     referee_sub = SubRegister("referee_data", sizeof(Referee_Data_t));
     for (uint8_t i = 0; i < 4; i++) {
-        // 使用新框架 PID 工具做 3508 速度环。
-        // PID 输出直接作为 DJI 电机 0x200 电流命令发送。
         PID_Init(&chassis_ctrl.speed_pid[i],
                  ENGINEER_CHASSIS_MAX_CURRENT,
                  ENGINEER_CHASSIS_PID_I_LIMIT,
@@ -104,6 +104,7 @@ void Engineer_Chassis_Task(const Chassis_Motor_Group_t *c_motor)
     if (c_motor == NULL) {
         // 没有电机反馈时闭环不可信，直接清零输出。
         Chassis_Clear_Output();
+        Chassis_Update_Speed_Monitor(NULL);
         Chassis_Record_Feedback(c_motor, DUALBOARD_FB_ERROR, 1);
         System_State_Report(ID_CHASSIS, STATUS_ERROR);
         return;
@@ -116,6 +117,7 @@ void Engineer_Chassis_Task(const Chassis_Motor_Group_t *c_motor)
     if (!DualBoard_Chassis_Is_Online() || B2B_Chassis_Cmd.mode == DUALBOARD_CHASSIS_SAFE) {
         // 串口超时或显式安全模式：清 PID 积分并输出 0 电流。
         Chassis_Clear_Output();
+        Chassis_Update_Speed_Monitor(c_motor);
         Chassis_Record_Feedback(c_motor, DUALBOARD_FB_LOST, 0);
         System_State_Report(ID_CHASSIS, STATUS_LOST);
         return;
@@ -127,6 +129,7 @@ void Engineer_Chassis_Task(const Chassis_Motor_Group_t *c_motor)
                    B2B_Chassis_Cmd.vy_mm_s,
                    B2B_Chassis_Cmd.vw_mrad_s,
                    &chassis_mecanum);
+    Chassis_Update_Speed_Monitor(c_motor);
 
     float raw_out[4] = {0.0f};
     int16_t out[4] = {0};
@@ -167,6 +170,17 @@ static void Chassis_Clear_Output(void)
         chassis_ctrl.target_rpm[i] = 0.0f;
     }
     DJI_Motor_Send(&hfdcan1, 0x200, 0, 0, 0, 0);
+}
+
+static void Chassis_Update_Speed_Monitor(const Chassis_Motor_Group_t *c_motor)
+{
+    for (uint8_t i = 0U; i < 4U; i++) {
+        Engineer_Chassis_Speed[i].Target_rpm = chassis_ctrl.target_rpm[i];
+        if (c_motor != NULL) {
+            Engineer_Chassis_Speed[i].Speed_now =
+                (float)c_motor->DJI_3508_Chassis[i].Speed_now;
+        }
+    }
 }
 
 //底盘功率

@@ -21,6 +21,10 @@ BSP_PWM_t picture_pitch_pwm = {&htim2, TIM_CHANNEL_3, PWM_CHANNEL_NORMAL};
 UART_RX_NODE(&huart5, 18, DBUS_RX_DATA, NULL, 18, &DBUS, DBUS_Resolved);
 OFFLINE_NODE(&DBUS.offline, DBUS_OFFLINE_TIME, GROUP_NONE);
 
+// 沿用老车接线：VT03 图传发送端接机械臂板 USART1，输出 921600 波特率的 21 字节 VT13 遥控帧。
+UART_RX_NODE(&huart1, 21, VT13_RX_DATA, NULL, 21, &VT13, VT13_Resolved);
+OFFLINE_NODE(&VT13.offline, DBUS_OFFLINE_TIME, GROUP_NONE);
+
 // ==========================================
 // UART7 公用上位机口（board2）
 //   发送：常驻，VOFA 波形/MATLAB 遥测共用（见 All_Task.c），不受联调开关控制。

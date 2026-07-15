@@ -19,16 +19,27 @@ float Arm_JointAlgo_Gravity(uint8_t axis,
                             uint8_t joint_count,
                             const volatile Arm_Gravity_Model_t gravity[],
                             const volatile float gravity_scale[],
-                            float q2,
-                            float q4,
-                            float q5)
+                            const float joint_position[])
 {
     const volatile Arm_Gravity_Model_t *model;
     float scale;
+    float q2;
+    float q4;
+    float q5;
 
-    if (gravity == NULL || gravity_scale == NULL || axis >= joint_count) return 0.0f;
+    if (gravity == NULL || gravity_scale == NULL || joint_position == NULL || axis >= joint_count) {
+        return 0.0f;
+    }
     model = &gravity[axis];
     scale = Arm_JointAlgo_ClampFinite(gravity_scale[axis], 0.0f, 2.0f, 0.0f);
+
+    /*
+     * 统一接收J1~J6完整角度，便于CSV拟合后直接扩展六轴耦合模型。
+     * 当前已验证公式仍只使用J2/J4/J5；其余轴在新系数写入前安全返回0。
+     */
+    q2 = joint_position[ARM_JOINT_ALGO_AXIS_J2];
+    q4 = joint_position[ARM_JOINT_ALGO_AXIS_J4];
+    q5 = joint_position[ARM_JOINT_ALGO_AXIS_J5];
 
     if (axis == ARM_JOINT_ALGO_AXIS_J2) {
         if (joint_count <= ARM_JOINT_ALGO_AXIS_J4) return 0.0f;

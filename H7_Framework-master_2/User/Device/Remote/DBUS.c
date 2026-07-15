@@ -12,6 +12,7 @@
 #include "stm32h7xx_hal.h"
 
 uint8_t DBUS_RX_DATA[18]__attribute__((section(".RAM_D2")));
+uint8_t DBUS_RAW_SNAPSHOT[18];
 DBUS_Typedef DBUS = { 0 };
 
 static float DBUS_OneFilter(float last, float now, float thresholdValue);
@@ -23,7 +24,10 @@ static void DBUS_HandleKeyToggle(uint8_t is_pressed, uint8_t *lock_flag, uint8_t
  */
 void DBUS_Resolved(uint8_t* Data, void *device_ptr,uint16_t size)
 {
+    if (Data == NULL || device_ptr == NULL || size != sizeof(DBUS_RAW_SNAPSHOT)) return;
     DBUS_Typedef*DBUS = device_ptr;
+    // DMA 缓冲区会被下一帧复用；解析回调内保存一份完整原始帧供板间通信读取。
+    memcpy(DBUS_RAW_SNAPSHOT, Data, sizeof(DBUS_RAW_SNAPSHOT));
     // 如果离线时间未作改动，在此更新在线生存时间
     DBUS->offline.last_feed_tick = HAL_GetTick();
 

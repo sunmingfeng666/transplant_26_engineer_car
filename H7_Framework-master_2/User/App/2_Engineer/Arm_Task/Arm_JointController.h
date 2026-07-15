@@ -67,7 +67,7 @@ typedef struct {
 extern volatile Arm_Control_Config_t Arm_Control_Config;
 extern volatile Arm_Control_Debug_t Arm_Control_Debug;
 
-float Arm_JointController_Gravity(uint8_t axis, float q2, float q4, float q5);
+float Arm_JointController_Gravity(uint8_t axis, const float joint_position[ARM_JOINT_COUNT]);
 float Arm_JointController_Impedance(uint8_t axis, float target, float position, float velocity);
 float Arm_JointController_LimitTorque(uint8_t axis, float torque, uint8_t *saturated);
 

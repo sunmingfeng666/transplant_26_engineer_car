@@ -154,6 +154,7 @@ typedef union {
 } DBUS_UNION_TypeDef;
 
 extern uint8_t DBUS_RX_DATA[18];
+extern uint8_t DBUS_RAW_SNAPSHOT[18];
 extern DBUS_Typedef DBUS;
 extern DBUS_UNION_TypeDef DBUS_UNION;
 /**

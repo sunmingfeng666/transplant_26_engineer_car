@@ -59,6 +59,7 @@ void IMU_Task(void *argument)
 //运动控制任务 1000Hz
 static Arm_Motor_Group_t arm_m = {0};
 static DBUS_Typedef dbus_snap = {0};
+static VT13_Typedef vt13_snap = {0};
 void Motor_Task(void *argument)
 {
     (void)argument;
@@ -67,10 +68,12 @@ void Motor_Task(void *argument)
 
     Subscriber_t *a_motor_sub = NULL;
     Subscriber_t *dbus_sub = NULL;
+    Subscriber_t *vt13_sub = NULL;
     uint8_t vofa_divider = 0U;
 
     a_motor_sub = SubRegister("arm_motors", sizeof(Arm_Motor_Group_t));
     dbus_sub = SubRegister("dbus_data", sizeof(DBUS_Typedef));
+    vt13_sub = SubRegister("vt13_data", sizeof(VT13_Typedef));
 
     // 机械臂控制初始化：默认位置保持，重力/阻抗需通过调试结构逐轴开启。
     Engineer_Arm_Init();
@@ -81,20 +84,11 @@ void Motor_Task(void *argument)
 
         if (a_motor_sub) SubGetMessage(a_motor_sub, &arm_m);
         if (dbus_sub) SubGetMessage(dbus_sub, &dbus_snap);
+        if (vt13_sub) SubGetMessage(vt13_sub, &vt13_snap);
 
-        Engineer_Arm_Task(&arm_m, &dbus_snap, 0.001f);
+        Engineer_Arm_Task(&arm_m, &dbus_snap, &vt13_snap, 0.001f);
 
-        // ==========================================
-        // UART7 遥测发送 @ 100Hz（board2 公用上位机口，常驻，不受联调开关控制）
-        //   用途：VOFA 看波形、MATLAB 3D 显示。
-        //   协议：JustFloat，115200 波特率；串口忙时底层直接丢帧，不阻塞 1kHz 电机控制任务。
-        //   帧布局：
-        //     ch0-5  = J1..J6 实际位置(rad)，MATLAB 取前 6 通道驱动 3D 模型。
-        //     ch6-17 = J2/J4/J5 的 target/vel/gravity/command 调试量，VOFA 看波形。
-        //     ch18   = 控制器状态（state）。
-        //     ch19   = 联调链路在线标志（无联调编译开关时恒 0）。
-        //   想看别的波形：直接改这一处 VOFA_JustFloat 的通道映射即可。
-        // ==========================================
+        // UART7 @100Hz：输出机械臂遥测帧。
         if (++vofa_divider >= 10U) {
             vofa_divider = 0U;
 #if ARM_MATLAB_DEBUG_ENABLE

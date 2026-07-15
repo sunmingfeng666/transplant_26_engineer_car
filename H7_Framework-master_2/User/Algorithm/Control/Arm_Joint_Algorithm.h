@@ -26,9 +26,7 @@ float Arm_JointAlgo_Gravity(uint8_t axis,
                             uint8_t joint_count,
                             const volatile Arm_Gravity_Model_t gravity[],
                             const volatile float gravity_scale[],
-                            float q2,
-                            float q4,
-                            float q5);
+                            const float joint_position[]);
 float Arm_JointAlgo_Impedance(float target,
                               float position,
                               float velocity,

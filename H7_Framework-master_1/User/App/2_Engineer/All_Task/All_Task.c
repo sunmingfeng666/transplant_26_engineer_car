@@ -7,6 +7,7 @@
 #include "DBUS.h"
 #include "Message_Center.h"
 #include "Power_CAP.h"
+#include "Power_Meter.h"
 #include "Referee.h"
 #include "Robot_Cmd.h"
 #include "System_State.h"
@@ -15,8 +16,34 @@
 #include "VT13.h"
 #include "Chassis_Ctrl.h"
 #include "Picture_Ctrl.h"
+#include "LeadScrew_Ctrl.h"
 #include "Store_Ctrl.h"
 #include "Engineer_Feedback.h"
+#include "Comm_DualBoard.h"
+#include "Vofa.h"
+
+// 板1执行机构调试快照：只用于集中观察，不参与实际控制。
+typedef struct {
+    B2B_Chassis_Cmd_t chassis;
+    B2B_Picture_Cmd_t picture;
+    Engineer_LeadScrew_Status_t lead_screw;
+    int16_t lead_screw_output;
+    Power_Meter_t power_meter;  // 板1 FDCAN1/0x605 独立功率计快照
+} B2B_Executor_Debug_t;
+
+volatile B2B_Executor_Debug_t B2B_Executor_Debug = {0};
+
+static void B2B_Executor_Debug_Update(void)
+{
+    B2B_Executor_Debug_t snapshot = {0};
+
+    snapshot.chassis = B2B_Chassis_Cmd;
+    snapshot.picture = B2B_Picture_Cmd;
+    snapshot.lead_screw = Engineer_LeadScrew_Get_Status();
+    snapshot.lead_screw_output = Engineer_LeadScrew_Get_Output();
+    snapshot.power_meter = power_meter;
+    B2B_Executor_Debug = snapshot;
+}
 //指令中心任务 200Hz
 void Command_Task(void *argument)
 {
@@ -65,6 +92,8 @@ void IMU_Task(void *argument)
 static Chassis_Motor_Group_t chassis_m = {0};
 static Picture_Motor_Group_t picture_m = {0};
 static Store_Motor_Group_t store_m = {0};
+static uint8_t vofa_divider = 0U;
+
 void Motor_Task(void *argument)
 {
     (void)argument;
@@ -80,6 +109,7 @@ void Motor_Task(void *argument)
     store_motor_sub = SubRegister("store_motors", sizeof(Store_Motor_Group_t));
     Engineer_Chassis_Init();
     Engineer_Picture_Init();
+    Engineer_LeadScrew_Init();
     Engineer_Store_Init();
     Engineer_Feedback_Init();
 
@@ -93,9 +123,30 @@ void Motor_Task(void *argument)
 
         // 底盘板电机输出路径：双板底盘命令 -> 四个 3508 电流。
         Engineer_Chassis_Task(&chassis_m);
+        // 丝杠须在图传之前算好电流：二者共用 CAN3 的 0x200 帧，由图传任务统一发送。
+        Engineer_LeadScrew_Task(&picture_m);
         Engineer_Picture_Task(&picture_m);
         Engineer_Store_Task(&store_m);
         Engineer_Feedback_Task(&chassis_m, &picture_m, &store_m);
+
+        // 每个 1 ms 控制周期结束后刷新一次，Ozone 只需观察这一个全局变量。
+        B2B_Executor_Debug_Update();
+
+        if (++vofa_divider >= 10U)
+        {
+            vofa_divider = 0U;
+
+            // 目标/实际交替发送，VOFA 中每相邻两条曲线对应同一个底盘轮。
+            VOFA_JustFloat(&huart7, 8,
+                           Engineer_Chassis_Speed[0].Target_rpm,
+                           Engineer_Chassis_Speed[0].Speed_now,
+                           Engineer_Chassis_Speed[1].Target_rpm,
+                           Engineer_Chassis_Speed[1].Speed_now,
+                           Engineer_Chassis_Speed[2].Target_rpm,
+                           Engineer_Chassis_Speed[2].Speed_now,
+                           Engineer_Chassis_Speed[3].Target_rpm,
+                           Engineer_Chassis_Speed[3].Speed_now);
+        }
     }
 }
 

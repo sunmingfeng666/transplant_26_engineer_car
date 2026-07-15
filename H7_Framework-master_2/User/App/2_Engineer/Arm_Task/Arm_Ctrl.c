@@ -23,8 +23,17 @@
 #define ARM_J5_MIN (-1.76146317f)
 #define ARM_J5_MAX ( 1.67410f)
 
+/*
+ * 上电默认"正常位"(收起位)，J1~J6 弧度，取自老代码 Move_Task/One_Click 正常模式基准。
+ * 注：老代码 J4=1.8637 超过本代码上限 ARM_J4_MAX(1.848)，此处直接取合法上限。
+ */
+static const float ARM_HOME_POSE[ARM_JOINT_COUNT] = {
+    -0.8310f, -0.0753f, 0.0811f, 1.848f, -0.8379f, -2.6858f
+};
+
 #define ARM_JOINT_SPEED           2.0f
 #define ARM_DBUS_STEP             0.00005f
+#define ARM_VT13_BUTTON_RATE      0.35f
 #define ARM_RETRY_PERIOD_MS       100U
 #define ARM_TERMINAL_CLOSE_TORQUE 1.0f
 #define ARM_TERMINAL_OPEN_TORQUE (-1.2f)
@@ -39,11 +48,13 @@ static uint8_t s_terminal_prev_online;
 static uint8_t s_clamp_close;
 static uint32_t s_last_retry_tick;
 
-volatile uint8_t Arm_Disable_Enable = 0U;
-
 static uint8_t Arm_IsDisabled(void)
 {
-    return Arm_Disable_Enable != 0U;
+#if ARM_CONTROL_BUILD_MODE == ARM_BUILD_MODE_DISABLED
+    return 1U;
+#else
+    return 0U;
+#endif
 }
 
 static float Arm_Clamp(float value, float min_value, float max_value)
@@ -77,18 +88,27 @@ static uint16_t Arm_GetMotorId(uint8_t axis)
     return (uint16_t)(axis + 1U);
 }
 
+#if ARM_CONTROL_BUILD_MODE == ARM_BUILD_MODE_NORMAL
 static uint8_t Arm_IsForcePvAxis(uint8_t axis)
 {
-    return axis == ARM_AXIS_J1 || axis == ARM_AXIS_J5;
+    return axis == ARM_AXIS_J1;
 }
+#endif
 
 static uint8_t Arm_RequestedMode(uint8_t axis)
 {
+#if ARM_CONTROL_BUILD_MODE == ARM_BUILD_MODE_DISABLED
+    (void)axis;
+    return ARM_MODE_DISABLED;
+#elif ARM_CONTROL_BUILD_MODE == ARM_BUILD_MODE_GRAVITY_ONLY
+    /* 当前只有J2/J4/J5具备已验证重力模型；其它关节继续使用电机内部位置环保持。 */
+    if (axis == ARM_AXIS_J2 || axis == ARM_AXIS_J4 || axis == ARM_AXIS_J5) {
+        return ARM_MODE_GRAVITY;
+    }
+    return ARM_MODE_POSITION;
+#else
     uint8_t mode;
 
-    if (Arm_IsDisabled()) {
-        return ARM_MODE_DISABLED;
-    }
     if (axis >= ARM_JOINT_COUNT) {
         return ARM_MODE_POSITION;
     }
@@ -102,6 +122,7 @@ static uint8_t Arm_RequestedMode(uint8_t axis)
     mode = Arm_Control_Config.axis_mode[axis];
     if (mode > ARM_MODE_DISABLED) return ARM_MODE_POSITION;
     return mode;
+#endif
 }
 
 static uint16_t Arm_DmMode(uint8_t mode)
@@ -133,7 +154,7 @@ static void Arm_ConfigureAxis(uint8_t axis, uint8_t requested_mode)
     Motor_Mode(bus, id, new_dm_mode, DM_CMD_MOTOR_MODE);
     s_active_mode[axis] = requested_mode;
     PID_Clear(&s_external_pid[axis]);
-    Arm_Control_Debug.ramp[axis] = requested_mode == ARM_MODE_POSITION ? 1.0f : 0.0f;
+    Arm_Control_Debug.ramp[axis] = (requested_mode == ARM_MODE_POSITION) ? 1.0f : 0.0f;
 }
 
 static void Arm_LoadExternalPidParam(uint8_t axis, float kpid[3])
@@ -180,6 +201,7 @@ static float Arm_CalcExternalPidTorque(uint8_t axis, float target, float positio
     return PID_Calculate(&s_external_pid[axis], position, target);
 }
 
+#if ARM_CONTROL_BUILD_MODE != ARM_BUILD_MODE_GRAVITY_ONLY
 static void Arm_LimitTargets(void)
 {
     s_target[ARM_AXIS_J1] = Arm_Clamp(s_target[ARM_AXIS_J1], P_MIN, P_MAX);
@@ -189,13 +211,38 @@ static void Arm_LimitTargets(void)
     s_target[ARM_AXIS_J5] = Arm_Clamp(s_target[ARM_AXIS_J5], ARM_J5_MIN, ARM_J5_MAX);
     s_target[ARM_AXIS_J6] = Arm_Clamp(s_target[ARM_AXIS_J6], P_MIN, P_MAX);
 }
+#endif
 
-static void Arm_UpdateDbusTarget(const DBUS_Typedef *dbus, float dt_s)
+static void Arm_UpdateRemoteTarget(const DBUS_Typedef *dbus,
+                                   const VT13_Typedef *vt13,
+                                   float dt_s)
 {
+#if ARM_CONTROL_BUILD_MODE == ARM_BUILD_MODE_GRAVITY_ONLY
+    /* 独立重力调试固件不接受遥控目标，防止测试过程中位置关节突然运动。 */
+    (void)dbus;
+    (void)vt13;
+    (void)dt_s;
+#else
     float step_scale;
 
-    if (dbus == NULL || !dbus->offline.is_online) return;
+    /* 全局失能期间禁止累计目标，重新使能时再从实际位置捕获。 */
+    if (Arm_IsDisabled()) return;
     step_scale = Arm_Clamp(dt_s, 0.0f, 0.01f) / 0.001f;
+
+    /* 老车 VT13 机械臂挡位：右摇杆 J1/J2，左摇杆 J3/J4，拨轮 J6，左右自定义键 J5。 */
+    if (vt13 != NULL && vt13->offline.is_online && vt13->Remote.mode_sw == 2U) {
+        s_target[ARM_AXIS_J1] -= (float)vt13->Remote.Channel[0] * ARM_DBUS_STEP * step_scale;
+        s_target[ARM_AXIS_J2] += (float)vt13->Remote.Channel[1] * ARM_DBUS_STEP * step_scale;
+        s_target[ARM_AXIS_J3] += (float)vt13->Remote.Channel[3] * ARM_DBUS_STEP * step_scale;
+        s_target[ARM_AXIS_J4] += (float)vt13->Remote.Channel[2] * ARM_DBUS_STEP * step_scale;
+        s_target[ARM_AXIS_J5] += ((float)vt13->Remote.fn_1 - (float)vt13->Remote.fn_2) *
+                                 ARM_VT13_BUTTON_RATE * dt_s;
+        s_target[ARM_AXIS_J6] += (float)vt13->Remote.wheel * ARM_DBUS_STEP * step_scale;
+        Arm_LimitTargets();
+        return;
+    }
+
+    if (dbus == NULL || !dbus->offline.is_online) return;
 
     if (dbus->Remote.S1 == 1U) {
         s_target[ARM_AXIS_J1] -= (float)dbus->Remote.CH0 * ARM_DBUS_STEP * step_scale;
@@ -210,11 +257,13 @@ static void Arm_UpdateDbusTarget(const DBUS_Typedef *dbus, float dt_s)
     if (dbus->Remote.S2 == 1U) s_clamp_close = 1U;
     else if (dbus->Remote.S2 == 2U) s_clamp_close = 0U;
     Arm_LimitTargets();
+#endif
 }
 
 uint8_t Engineer_Arm_Init(void)
 {
-    memset(s_target, 0, sizeof(s_target));
+    /* 上电默认目标=正常位(收起位)，而非零位。 */
+    memcpy(s_target, ARM_HOME_POSE, sizeof(s_target));
     memset(s_external_pid, 0, sizeof(s_external_pid));
     memset(s_prev_online, 0, sizeof(s_prev_online));
     memset((void *)&Arm_Control_Debug, 0, sizeof(Arm_Control_Debug));
@@ -233,6 +282,7 @@ uint8_t Engineer_Arm_Init(void)
 
 void Engineer_Arm_Task(const Arm_Motor_Group_t *feedback,
                        const DBUS_Typedef *dbus,
+                       const VT13_Typedef *vt13,
                        float dt_s)
 {
     uint16_t online_mask = 0U;
@@ -242,12 +292,15 @@ void Engineer_Arm_Task(const Arm_Motor_Group_t *feedback,
     uint8_t any_ramping = 0U;
     uint8_t retry_due;
     uint32_t now;
+    float joint_position[ARM_JOINT_COUNT];
 
     if (feedback == NULL) return;
     dt_s = Arm_Clamp(dt_s, 0.0001f, 0.01f);
     now = HAL_GetTick();
     retry_due = (now - s_last_retry_tick) >= ARM_RETRY_PERIOD_MS;
-    Arm_Control_Debug.remote_online = (dbus != NULL && dbus->offline.is_online) ? 1U : 0U;
+    Arm_Control_Debug.remote_online =
+        ((dbus != NULL && dbus->offline.is_online) ||
+         (vt13 != NULL && vt13->offline.is_online)) ? 1U : 0U;
 
     for (uint8_t axis = 0U; axis < ARM_JOINT_COUNT; axis++) {
         const DM_MOTOR_DATA_Typedef *motor = Arm_GetFeedback(feedback, axis);
@@ -257,6 +310,7 @@ void Engineer_Arm_Task(const Arm_Motor_Group_t *feedback,
 
         Arm_Control_Debug.position[axis] = motor->pos;
         Arm_Control_Debug.velocity[axis] = motor->vel;
+        joint_position[axis] = motor->pos;
 
         if (!online) {
             fault_mask |= (uint16_t)(1U << axis);
@@ -270,7 +324,13 @@ void Engineer_Arm_Task(const Arm_Motor_Group_t *feedback,
 
         online_mask |= (uint16_t)(1U << axis);
         if (!s_prev_online[axis]) {
+#if ARM_CONTROL_BUILD_MODE == ARM_BUILD_MODE_GRAVITY_ONLY
+            /* 重力调试时J1/J3/J6保持上电瞬间位置，不主动前往正常收起位。 */
             s_target[axis] = motor->pos;
+#else
+            /* 上电首次上线：目标设为正常位，机械臂主动收拢到收起姿态(而非停在当前位置)。 */
+            s_target[axis] = ARM_HOME_POSE[axis];
+#endif
             s_target_valid_mask |= (uint8_t)(1U << axis);
             Arm_ConfigureAxis(axis, requested_mode);
             s_prev_online[axis] = 1U;
@@ -284,14 +344,15 @@ void Engineer_Arm_Task(const Arm_Motor_Group_t *feedback,
         s_last_retry_tick = now;
     }
 
-    Arm_UpdateDbusTarget(dbus, dt_s);
+    Arm_UpdateRemoteTarget(dbus, vt13, dt_s);
 
-#if ARM_MATLAB_DEBUG_ENABLE
+#if ARM_MATLAB_DEBUG_ENABLE && (ARM_CONTROL_BUILD_MODE != ARM_BUILD_MODE_GRAVITY_ONLY)
     if (Arm_MatlabDebug_ApplyTarget(s_target, ARM_JOINT_COUNT)) {
         Arm_LimitTargets();
     }
 #endif
 
+#if ARM_CONTROL_BUILD_MODE != ARM_BUILD_MODE_GRAVITY_ONLY
     /*
      * 一键动作引擎：激活时沿轨迹覆盖 s_target[]（优先级高于 DBUS/MATLAB），
      * 覆盖后再钳一次限位。空闲则不动 s_target[]，上面逻辑照常生效。
@@ -312,6 +373,7 @@ void Engineer_Arm_Task(const Arm_Motor_Group_t *feedback,
             Arm_OneClick_Update(current_pos, s_target, ARM_JOINT_COUNT);
         }
     }
+#endif
 
     for (uint8_t axis = 0U; axis < ARM_JOINT_COUNT; axis++) {
         const DM_MOTOR_DATA_Typedef *motor = Arm_GetFeedback(feedback, axis);
@@ -351,13 +413,11 @@ void Engineer_Arm_Task(const Arm_Motor_Group_t *feedback,
 
             switch (mode) {
             case ARM_MODE_GRAVITY:
-                gravity_tau = Arm_JointController_Gravity(
-                    axis, feedback->J2_8009.pos, feedback->J4_4340.pos, feedback->J5_4310.pos);
+                gravity_tau = Arm_JointController_Gravity(axis, joint_position);
                 PID_Clear(&s_external_pid[axis]);
                 break;
             case ARM_MODE_GRAVITY_IMPEDANCE:
-                gravity_tau = Arm_JointController_Gravity(
-                    axis, feedback->J2_8009.pos, feedback->J4_4340.pos, feedback->J5_4310.pos);
+                gravity_tau = Arm_JointController_Gravity(axis, joint_position);
                 impedance_tau = Arm_CalcExternalPidTorque(axis, s_target[axis], motor->pos);
                 break;
             case ARM_MODE_MIT:
@@ -369,10 +429,9 @@ void Engineer_Arm_Task(const Arm_Motor_Group_t *feedback,
             }
             command_tau = (gravity_tau + impedance_tau) * Arm_Control_Debug.ramp[axis];
             command_tau = Arm_JointController_LimitTorque(axis, command_tau, &saturated);
-            if (saturated) saturation_mask |= (uint16_t)(1U << axis);
-
             MIT_Ctrl(Arm_GetBus(axis), Arm_GetMotorId(axis),
                      s_target[axis], 0.0f, 0.0f, 0.0f, command_tau);
+            if (saturated) saturation_mask |= (uint16_t)(1U << axis);
         }
 
         Arm_Control_Debug.gravity_tau[axis] = gravity_tau;
@@ -388,7 +447,8 @@ void Engineer_Arm_Task(const Arm_Motor_Group_t *feedback,
     } else if (feedback->Terminal_3507.offline.is_online) {
         const Arm_OneClick_Output_t *oneclick_output = Arm_OneClick_GetOutput();
         uint8_t clamp_close = s_clamp_close;
-        if (oneclick_output != NULL && oneclick_output->active && oneclick_output->clamp_override) {
+        if (oneclick_output != NULL &&
+            oneclick_output->active && oneclick_output->clamp_override) {
             clamp_close = oneclick_output->clamp_close;
         }
         Arm_Control_Debug.clamp_close = clamp_close;

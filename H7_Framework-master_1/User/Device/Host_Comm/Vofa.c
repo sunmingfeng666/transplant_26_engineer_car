@@ -37,7 +37,8 @@ void VOFA_JustFloat(UART_HandleTypeDef *huart, uint8_t channels_num, ...)
         while (huart->hdmatx != NULL && HAL_DMA_GetState(huart->hdmatx) == HAL_DMA_STATE_BUSY);
     }
 
-    static uint8_t send_buf[(VOFA_MAX_CHANNELS * 4) + 4];
+    static uint8_t send_buf[(VOFA_MAX_CHANNELS * 4) + 4]
+        __attribute__((section(".RAM_D2")));
 
     va_list args;
     va_start(args, channels_num);

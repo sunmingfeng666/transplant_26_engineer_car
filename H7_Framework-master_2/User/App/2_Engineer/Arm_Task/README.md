@@ -6,11 +6,15 @@
 
 - `master_enable = 0`: all six joints use position-speed mode.
 - `master_enable = 1`: J2/J4/J5 follow `axis_mode[n]`; others stay position mode.
-- `Arm_Disable_Enable = 1` (standalone switch in `Arm_Ctrl.h`, mirrors
-  `Arm_MatlabDebug_Enable`): **disable mode** — every joint motor and the
-  terminal gripper are sent `DM_CMD_RESET_MODE`. Motors release all torque and
-  the arm can be moved by hand. State reports `5` (ARM_STATE_DISABLED). This
-  overrides `master_enable` regardless of its value.
+- `ARM_CONTROL_BUILD_MODE = ARM_BUILD_MODE_DISABLED`: **disable build** — every
+  joint motor and the terminal gripper are sent `DM_CMD_RESET_MODE`. Motors
+  release all torque and the arm can be moved by hand. State reports `5`
+  (`ARM_STATE_DISABLED`). This compile-time selection overrides
+  `master_enable` regardless of its value.
+- `ARM_CONTROL_BUILD_MODE = ARM_BUILD_MODE_GRAVITY_ONLY`: **gravity-only
+  build** — J2/J4/J5 run their validated gravity models without impedance PID;
+  J1/J3/J6 capture and hold their power-on positions with the motor position
+  loop. Remote targets, MATLAB targets, and one-click trajectories are ignored.
 - `axis_mode[n] = 0`: position-speed mode.
 - `axis_mode[n] = 1`: gravity compensation.
 - `axis_mode[n] = 2`: gravity compensation plus external impedance.
@@ -18,19 +22,33 @@
 Only axes 1, 3, and 4 (J2, J4, and J5) accept gravity or impedance modes.
 The defaults are safe: `master_enable` is zero and every axis is in position mode.
 
-### Disable mode (`Arm_Disable_Enable = 1`)
+### Disable build (`ARM_CONTROL_BUILD_MODE = ARM_BUILD_MODE_DISABLED`)
 
 Sets all six joints plus the terminal gripper to `DM_CMD_RESET_MODE`, releasing
-all torque. Use it as a software e-stop or to hand-pose the arm. The switch is a
-standalone `volatile uint8_t Arm_Disable_Enable` (default 0) declared in
-`Arm_Ctrl.h`, decoupled from `master_enable` and taking priority over it.
+all torque. Use this build to hand-pose the arm during a dedicated debug run.
+The compile-time selection is declared in `Arm_Ctrl.h`, defaults to
+`ARM_BUILD_MODE_NORMAL`, and takes priority over `master_enable`.
 
 - The arm may drop under gravity once torque is released — support it first.
 - Disabled motors stop feedback, so they read as offline/fault while disabled;
   this is expected and the state still reports `5` (disabled) with priority.
-- To recover, set `Arm_Disable_Enable` back to `0`. Each motor is re-enabled,
-  recaptures its current position, and resumes its `master_enable`/`axis_mode`
-  mode with no jump.
+- To recover, select `ARM_BUILD_MODE_NORMAL`, rebuild, and flash again. The mode
+  cannot be changed through the debugger while the firmware is running.
+
+### Gravity-only build (`ARM_CONTROL_BUILD_MODE = ARM_BUILD_MODE_GRAVITY_ONLY`)
+
+This build is intended for isolated gravity-compensation verification. Only
+J2, J4, and J5 currently have validated gravity models, so only those axes enter
+`ARM_MODE_GRAVITY`. J1, J3, and J6 stay in position mode and capture their
+actual positions when feedback first becomes valid. This prevents zero-model
+axes from becoming torque-free.
+
+- `master_enable` and `axis_mode[]` do not select the active modes in this build.
+- External impedance PID is not calculated for J2/J4/J5.
+- Remote, MATLAB, and one-click position targets cannot move the joints.
+- Torque limits, offline handling, feedback checks, and torque ramp remain active.
+- Support the arm before flashing and first verify the gravity direction with a
+  reduced `gravity_scale`.
 
 Recommended first test:
 
@@ -50,7 +68,7 @@ Every transition captures the current position and ramps torque in over
 - `2`: mode transition ramp.
 - `3`: active gravity/impedance control.
 - `4`: degraded; at least one previously seen motor is offline.
-- `5`: disabled; all motors released via `Arm_Disable_Enable = 1`.
+- `5`: disabled; all motors released by the disabled build selection.
 
 `Arm_Control_Debug.fault_mask` and `saturation_mask` use bit 0 through bit 5
 for J1 through J6 and bit 6 for the terminal motor where applicable.

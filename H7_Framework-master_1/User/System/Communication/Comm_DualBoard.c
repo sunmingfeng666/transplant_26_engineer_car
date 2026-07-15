@@ -8,9 +8,11 @@
 #define DUALBOARD_TAIL 0x5AU
 #define DUALBOARD_VERSION 1U
 #define DUALBOARD_ENGINEER_VERSION 2U
+#define DUALBOARD_REMOTE_VERSION 3U
 #define CHASSIS_CHECKSUM_INDEX 10U
 #define ENGINEER_CHECKSUM_INDEX 22U
 #define ENGINEER_FEEDBACK_CHECKSUM_INDEX 22U
+#define REMOTE_CRC_INDEX 57U
 
 B2B_Tx_t Tx_Data = {0};
 B2B_Rx_t Rx_Data = {0};
@@ -42,10 +44,12 @@ static uint16_t uart_rx_len = 0;
 
 static uint8_t chassis_tx_seq = 0;
 static uint8_t engineer_tx_seq = 0;
+static uint8_t remote_tx_seq = 0;
 static uint8_t chassis_feedback_tx_seq = 0;
 static uint8_t engineer_feedback_tx_seq = 0;
 static B2B_Chassis_Frame_t chassis_tx_frame;
 static B2B_Engineer_Frame_t engineer_tx_frame;
+static B2B_Remote_Frame_t remote_tx_frame;
 static B2B_Chassis_Frame_t chassis_feedback_tx_frame;
 static B2B_Engineer_Feedback_Frame_t engineer_feedback_tx_frame;
 
@@ -53,6 +57,9 @@ _Static_assert(sizeof(B2B_Engineer_Frame_t) == DUALBOARD_ENGINEER_FRAME_LEN,
                "B2B engineer command frame size mismatch");
 _Static_assert(sizeof(B2B_Engineer_Feedback_Frame_t) == DUALBOARD_ENGINEER_FEEDBACK_FRAME_LEN,
                "B2B engineer feedback frame size mismatch");
+_Static_assert(sizeof(B2B_Aux_Command_t) == 14U, "B2B auxiliary command size mismatch");
+_Static_assert(sizeof(B2B_Remote_Frame_t) == DUALBOARD_REMOTE_FRAME_LEN,
+               "B2B remote frame size mismatch");
 
 static int16_t Float_To_Int16(float value)
 {
@@ -71,6 +78,18 @@ static uint8_t Frame_Checksum(const void *frame, uint8_t checksum_index)
     return (uint8_t)sum;
 }
 
+static uint16_t Frame_CRC16(const uint8_t *data, uint16_t len)
+{
+    uint16_t crc = 0xFFFFU;
+    for (uint16_t i = 0U; i < len; i++) {
+        crc ^= (uint16_t)data[i] << 8U;
+        for (uint8_t bit = 0U; bit < 8U; bit++) {
+            crc = (crc & 0x8000U) ? (uint16_t)((crc << 1U) ^ 0x1021U) : (uint16_t)(crc << 1U);
+        }
+    }
+    return crc;
+}
+
 static bool Chassis_Frame_Is_Valid(const B2B_Chassis_Frame_t *frame)
 {
     if (frame == NULL) return false;
@@ -85,6 +104,13 @@ static bool Engineer_Frame_Is_Valid(const B2B_Engineer_Frame_t *frame)
     if (frame->sof != DUALBOARD_SOF || frame->tail != DUALBOARD_TAIL) return false;
     if (frame->version != DUALBOARD_ENGINEER_VERSION) return false;
     return frame->checksum == Frame_Checksum(frame, ENGINEER_CHECKSUM_INDEX);
+}
+
+static bool Remote_Frame_Is_Valid(const B2B_Remote_Frame_t *frame)
+{
+    if (frame == NULL || frame->sof != DUALBOARD_SOF || frame->tail != DUALBOARD_TAIL) return false;
+    if (frame->version != DUALBOARD_REMOTE_VERSION) return false;
+    return frame->crc16 == Frame_CRC16((const uint8_t *)frame, REMOTE_CRC_INDEX);
 }
 
 // 命令帧收件箱：通信层收到并通过校验的原始帧暂存于此，等 App 命令层取走解析。
@@ -206,6 +232,30 @@ uint8_t DualBoard_Send_Engineer(UART_HandleTypeDef *huart,
     engineer_tx_frame.checksum = Frame_Checksum(&engineer_tx_frame, ENGINEER_CHECKSUM_INDEX);
 
     return (HAL_UART_Transmit(huart, (uint8_t *)&engineer_tx_frame, sizeof(engineer_tx_frame), 2U) == HAL_OK) ? 0U : 2U;
+}
+
+uint8_t DualBoard_Send_Remote(UART_HandleTypeDef *huart,
+                              const uint8_t dbus_raw[18],
+                              const uint8_t vt13_raw[21],
+                              uint8_t remote_online_bits,
+                              const B2B_Aux_Command_t *auxiliary)
+{
+    if (huart == NULL || dbus_raw == NULL || vt13_raw == NULL || auxiliary == NULL) return 1U;
+    if (huart->gState != HAL_UART_STATE_READY) return 2U;
+
+    remote_tx_frame.sof = DUALBOARD_SOF;
+    remote_tx_frame.version = DUALBOARD_REMOTE_VERSION;
+    remote_tx_frame.seq = remote_tx_seq++;
+    remote_tx_frame.remote_online_bits = remote_online_bits;
+    memcpy(remote_tx_frame.dbus_raw, dbus_raw, sizeof(remote_tx_frame.dbus_raw));
+    memcpy(remote_tx_frame.vt13_raw, vt13_raw, sizeof(remote_tx_frame.vt13_raw));
+    remote_tx_frame.auxiliary = *auxiliary;
+    remote_tx_frame.crc16 = Frame_CRC16((const uint8_t *)&remote_tx_frame, REMOTE_CRC_INDEX);
+    remote_tx_frame.tail = DUALBOARD_TAIL;
+
+    // 60B@115200 约 5.2ms；静态帧配合 UART busy 检查，100Hz 非阻塞发送不会覆盖在途数据。
+    return (HAL_UART_Transmit_IT(huart, (uint8_t *)&remote_tx_frame,
+                                 sizeof(remote_tx_frame)) == HAL_OK) ? 0U : 2U;
 }
 
 uint8_t DualBoard_Send_Engineer_Feedback(UART_HandleTypeDef *huart,
@@ -363,7 +413,15 @@ void DualBoard_UART_Rx(uint8_t *Buff, uint16_t Size)
     if (Buff == NULL || Size == 0U) return;
 
     // 通信层只做完整性校验+入库，不解析业务字段。解析交给 App 命令层。
-    // 24B：工程车命令帧或整车反馈帧。反馈帧本板(执行板)不消费，直接丢弃。
+    // 60B：工程车 V3 原始遥控帧；通信层只校验并交付 App。
+    if (Size == sizeof(B2B_Remote_Frame_t)) {
+        if (Remote_Frame_Is_Valid((const B2B_Remote_Frame_t *)Buff)) {
+            Inbox_Store(Buff, Size);
+        }
+        return;
+    }
+
+    // 24B：旧工程车命令帧或整车反馈帧。反馈帧本板(执行板)不消费，直接丢弃。
     if (Size == sizeof(B2B_Engineer_Frame_t)) {
         if (Buff[3] == DUALBOARD_FRAME_TYPE_ENGINEER_FEEDBACK) return;
         if (Engineer_Frame_Is_Valid((const B2B_Engineer_Frame_t *)Buff)) {

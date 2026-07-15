@@ -16,6 +16,7 @@ typedef struct __attribute__((aligned(4))){
 typedef struct __attribute__((aligned(4))){
     DJI_MOTOR_DATA_Typedef DJI_2006_Lift;
     DJI_MOTOR_DATA_Typedef DJI_2006_Transverse;
+    DJI_MOTOR_DATA_Typedef DJI_3508_LeadScrew;  // 登岛丝杠，与图传同在 CAN3、共用 0x200 帧
 } Picture_Motor_Group_t;
 
 typedef struct __attribute__((aligned(4))){

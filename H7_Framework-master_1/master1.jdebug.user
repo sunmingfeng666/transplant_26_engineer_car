@@ -1,0 +1,21 @@
+
+
+OpenDocument="usb_device.c", FilePath="E:/BaiduSyncdisk/strong/daima/test_transplant_26_engineer_car/test_transplant_26_engineer_car/H7_Framework-master_1/USB_DEVICE/App/usb_device.c", Line=45
+OpenDocument="main.c", FilePath="E:/BaiduSyncdisk/strong/daima/test_transplant_26_engineer_car/test_transplant_26_engineer_car/H7_Framework-master_1/Core/Src/main.c", Line=46
+OpenToolbar="Debug", Floating=0, x=0, y=0
+OpenWindow="Registers 1", DockArea=RIGHT, x=0, y=1, w=506, h=546, FilterBarShown=0, TotalValueBarShown=0, ToolBarShown=0, FilteredItems=[], RefreshRate=1
+OpenWindow="Memory 1", DockArea=BOTTOM, x=1, y=0, w=1383, h=328, FilterBarShown=0, TotalValueBarShown=0, ToolBarShown=0, EditorAddress=0x200051A2
+OpenWindow="Watched Data 1", DockArea=RIGHT, x=0, y=0, w=506, h=546, TabPos=0, TopOfStack=1, FilterBarShown=0, TotalValueBarShown=0, ToolBarShown=0
+OpenWindow="Functions", DockArea=LEFT, x=0, y=0, w=416, h=1093, FilterBarShown=0, TotalValueBarShown=0, ToolBarShown=0
+OpenWindow="Console", DockArea=BOTTOM, x=0, y=0, w=1176, h=328, FilterBarShown=0, TotalValueBarShown=0, ToolBarShown=0
+SmartViewPlugin="", Page="", Toolbar="Hidden", Window="SmartView 1"
+TableHeader="Functions", SortCol="Name", SortOrder="ASCENDING", VisibleCols=["Name";"Address";"Size";"#Insts";"Source"], ColWidths=[1634;104;100;100;286]
+TableHeader="Power Sampling", SortCol="None", SortOrder="ASCENDING", VisibleCols=["Index";"Time";"Ch 0"], ColWidths=[100;100;100]
+TableHeader="RegisterSelectionDialog", SortCol="None", SortOrder="ASCENDING", VisibleCols=[], ColWidths=[]
+TableHeader="Registers 1", SortCol="Name", SortOrder="ASCENDING", VisibleCols=["Name";"Value";"Description"], ColWidths=[100;144;294]
+TableHeader="Watched Data 1", SortCol="Expression", SortOrder="ASCENDING", VisibleCols=["Expression";"Value";"Location";"Refresh"], ColWidths=[158;100;104;118]
+TableHeader="TargetExceptionDialog", SortCol="Name", SortOrder="ASCENDING", VisibleCols=["Name";"Value";"Address";"Description"], ColWidths=[26;26;26;26]
+WatchedExpression="B2B_Remote_Debug", RefreshRate=5, Window=Watched Data 1
+WatchedExpression="B2B_Executor_Debug", RefreshRate=5, Window=Watched Data 1
+WatchedExpression="B2B_Executor_Debug", Window=Watched Data 1
+WatchedExpression="B2B_Executor_Debug", Window=Watched Data 1

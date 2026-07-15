@@ -14,7 +14,12 @@ typedef enum {
 #define DUALBOARD_CHASSIS_FRAME_LEN 12U
 #define DUALBOARD_ENGINEER_FRAME_LEN 24U
 #define DUALBOARD_ENGINEER_FEEDBACK_FRAME_LEN 24U
+#define DUALBOARD_REMOTE_FRAME_LEN 60U
 #define DUALBOARD_CHASSIS_TIMEOUT_MS 100U
+
+#define DUALBOARD_REMOTE_DBUS_ONLINE (1U << 0)
+#define DUALBOARD_REMOTE_VT13_ONLINE (1U << 1)
+#define DUALBOARD_AUX_OVERRIDE_ACTIVE (1U << 0)
 
 typedef enum {
     DUALBOARD_CHASSIS_SAFE = 0,
@@ -86,6 +91,31 @@ typedef struct __attribute__((packed)) {
     uint8_t checksum;
     uint8_t tail;
 } B2B_Engineer_Frame_t;
+
+/* 工程车 V3 遥控帧的辅助控制量；两个遥控器本体只传未经解算的原始帧。 */
+typedef struct __attribute__((packed)) {
+    uint8_t global_mode;
+    uint8_t mechanism_action;
+    uint8_t store_slot;
+    uint8_t action_seq;
+    int32_t picture_lift;
+    int32_t picture_transverse;
+    uint8_t ui_flags;
+    uint8_t aux_flags;
+} B2B_Aux_Command_t;
+
+/* 工程车 V3 固定 60 字节：18B DBUS + 21B VT13 + 14B 辅助结构 + CRC16。 */
+typedef struct __attribute__((packed)) {
+    uint8_t sof;
+    uint8_t version;
+    uint8_t seq;
+    uint8_t remote_online_bits;
+    uint8_t dbus_raw[18];
+    uint8_t vt13_raw[21];
+    B2B_Aux_Command_t auxiliary;
+    uint16_t crc16;
+    uint8_t tail;
+} B2B_Remote_Frame_t;
 
 /* 工程车 V2 反馈帧：独立于旧 12 字节底盘反馈，便于动作协调器判断完成和故障。 */
 typedef struct __attribute__((packed)) {
@@ -197,6 +227,11 @@ uint8_t DualBoard_Send_Engineer(UART_HandleTypeDef *huart,
                                 uint8_t store_slot,
                                 uint8_t action_seq,
                                 uint8_t ui_flags);
+uint8_t DualBoard_Send_Remote(UART_HandleTypeDef *huart,
+                              const uint8_t dbus_raw[18],
+                              const uint8_t vt13_raw[21],
+                              uint8_t remote_online_bits,
+                              const B2B_Aux_Command_t *auxiliary);
 uint8_t DualBoard_Send_Chassis_Feedback(UART_HandleTypeDef *huart,
                                         DualBoard_Chassis_Feedback_Status_e status,
                                         uint8_t motor_online_bits,

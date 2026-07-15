@@ -8,15 +8,16 @@
 
 volatile Arm_Control_Config_t Arm_Control_Config = {
     .master_enable = 1U,
+    /* J1由Arm_IsForcePvAxis强制PV(此处值不生效)；J2~J6统一MIT模式(电机MIT_MODE+板端阻抗PID)。 */
     .axis_mode = {
-        ARM_MODE_POSITION, ARM_MODE_GRAVITY_IMPEDANCE, ARM_MODE_MIT,
-        ARM_MODE_GRAVITY_IMPEDANCE, ARM_MODE_POSITION, ARM_MODE_MIT,
+        ARM_MODE_POSITION, ARM_MODE_MIT, ARM_MODE_MIT,
+        ARM_MODE_MIT, ARM_MODE_MIT, ARM_MODE_MIT,
     },
-    .gravity_scale = {0.0f, 1.0f, 0.0f, 1.0f, 0.0f, 0.0f},
-    .impedance_kp = {0.0f, 12.0f, 4.0f, 6.0f, 0.0f, 3.0f},
+    .gravity_scale = {0.0f, 1.0f, 0.0f, 1.0f, 1.0f, 0.0f},
+    .impedance_kp = {0.0f, 12.0f, 0.0f, 12.0f, 10.0f, 0.0f},
     .impedance_ki = {0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f},
-    .impedance_kd = {0.0f, 4.0f, 0.2f, 0.25f, 0.0f, 0.15f},
-    .impedance_i_limit = {0.0f, 0.5f, 0.5f, 0.5f, 0.0f, 0.5f},
+    .impedance_kd = {0.0f, 4.0f, 0.0f, 1.0f, 3.0f, 0.0f},
+    .impedance_i_limit = {0.0f, 0.5f, 0.5f, 0.5f, 0.5f, 0.5f},
     .torque_limit = {20.0f, 20.0f, 20.0f, 20.0f, 20.0f, 20.0f},
     .ramp_time_s = 1.0f,
     .gravity = {
@@ -45,15 +46,13 @@ volatile Arm_Control_Debug_t Arm_Control_Debug = {
     .state = ARM_STATE_WAIT_FEEDBACK,
 };
 
-float Arm_JointController_Gravity(uint8_t axis, float q2, float q4, float q5)
+float Arm_JointController_Gravity(uint8_t axis, const float joint_position[ARM_JOINT_COUNT])
 {
     return Arm_JointAlgo_Gravity(axis,
                                  ARM_JOINT_COUNT,
                                  Arm_Control_Config.gravity,
                                  Arm_Control_Config.gravity_scale,
-                                 q2,
-                                 q4,
-                                 q5);
+                                 joint_position);
 }
 
 float Arm_JointController_Impedance(uint8_t axis, float target, float position, float velocity)
