@@ -14,6 +14,7 @@
 #include "Comm_DualBoard.h"
 #include "DJI_Motor.h"
 #include "fdcan.h"
+#include "IMU_Task.h"
 #include "Message_Center.h"
 #include "Power_Ctrl.h"
 #include "Referee.h"
@@ -25,7 +26,15 @@
 #define ENGINEER_CHASSIS_PID_DEFAULT_KP     5.0f
 #define ENGINEER_CHASSIS_PID_DEFAULT_KI     0.1f
 #define ENGINEER_CHASSIS_PID_DEFAULT_KD     0.0f
-#define ENGINEER_CHASSIS_FALLBACK_POWER_W   45.0f
+#define ENGINEER_CHASSIS_YAW_PID_KP        300.0f
+#define ENGINEER_CHASSIS_YAW_PID_KI          0.0f
+#define ENGINEER_CHASSIS_YAW_PID_KD          0.0f
+#define ENGINEER_CHASSIS_YAW_MAX_CORRECTION_MRAD_S 1200.0f
+#define ENGINEER_CHASSIS_YAW_PID_I_LIMIT_MRAD_S     300.0f
+#define ENGINEER_CHASSIS_YAW_MIN_TARGET_MRAD_S       50.0f
+#define ENGINEER_CHASSIS_YAW_DIRECTION_CHECK_RAD_S    0.3f
+#define ENGINEER_CHASSIS_GYRO_Z_SIGN                  1.0f
+#define ENGINEER_CHASSIS_FALLBACK_POWER_W   140.0f
 #define ENGINEER_CHASSIS_BUFFER_TARGET_J    40.0f
 #define ENGINEER_CHASSIS_BUFFER_KP           2.0f
 #define ENGINEER_CHASSIS_MAX_BUFFER_J        60U
@@ -33,10 +42,17 @@
 
 typedef struct {
     PID_t speed_pid[4];
+    PID_t yaw_rate_pid;
     float target_rpm[4];   // 目标转速顺序：0x201、0x202、0x203、0x204。
+    float target_vw_rad_s;          // 小陀螺目标角速度，供 Ozone 观察。
+    float gyro_z_rad_s;             // BMI088 逻辑 Z 轴角速度，供 Ozone 观察。
+    float yaw_correction_mrad_s;    // 角速度外环修正量。
+    float resolved_vw_mrad_s;       // 送入麦轮解算的最终角速度。
     DualBoard_Chassis_Feedback_Status_e feedback_status;
     int16_t feedback_error;
     uint8_t feedback_motor_bits;   // 最近一次记录的 3508 在线位图
+    uint8_t yaw_loop_active;       // 1：本周期角速度外环生效。
+    uint8_t yaw_direction_fault;   // 1：目标与陀螺仪方向相反，本周期退回开环。
     uint8_t is_init;
 } Engineer_Chassis_Ctrl_t;
 
@@ -50,9 +66,12 @@ static Motor_Power_State_t chassis_power_states[4];
 static Power_Node_t chassis_power_nodes[4];
 static Power_Group_t chassis_power_group;
 static Subscriber_t *referee_sub;
+static Subscriber_t *imu_sub;
 static Referee_Data_t chassis_referee;
+static IMU_Data_t chassis_imu;
 
 static void Chassis_Clear_Output(void);
+static float Chassis_Resolve_Yaw_Rate(float target_vw_mrad_s);
 static void Chassis_Record_Feedback(const Chassis_Motor_Group_t *c_motor,
                                     DualBoard_Chassis_Feedback_Status_e status,
                                     int16_t error_code);
@@ -69,9 +88,15 @@ uint8_t Engineer_Chassis_Init(void)
         ENGINEER_CHASSIS_PID_DEFAULT_KI,
         ENGINEER_CHASSIS_PID_DEFAULT_KD,
     };
+    float yaw_pid_param[3] = {
+        ENGINEER_CHASSIS_YAW_PID_KP,
+        ENGINEER_CHASSIS_YAW_PID_KI,
+        ENGINEER_CHASSIS_YAW_PID_KD,
+    };
 
     Power_Ctrl_Init(&chassis_power_model);
     referee_sub = SubRegister("referee_data", sizeof(Referee_Data_t));
+    imu_sub = SubRegister("imu_data", sizeof(IMU_Data_t));
     for (uint8_t i = 0; i < 4; i++) {
         PID_Init(&chassis_ctrl.speed_pid[i],
                  ENGINEER_CHASSIS_MAX_CURRENT,
@@ -86,6 +111,16 @@ uint8_t Engineer_Chassis_Init(void)
         chassis_power_nodes[i].state = &chassis_power_states[i];
         chassis_power_nodes[i].model = &MODEL_M3508;
     }
+    // 外环输入为 rad/s，输出定义为 mrad/s 修正量，与板间底盘角速度命令单位一致。
+    PID_Init(&chassis_ctrl.yaw_rate_pid,
+             ENGINEER_CHASSIS_YAW_MAX_CORRECTION_MRAD_S,
+             ENGINEER_CHASSIS_YAW_PID_I_LIMIT_MRAD_S,
+             yaw_pid_param,
+             0.0f, 0.0f,
+             0.0f, 0.0f,
+             0,
+             Integral_Limit);
+    PID_Clear(&chassis_ctrl.yaw_rate_pid);
     chassis_power_group.nodes = chassis_power_nodes;
     chassis_power_group.node_count = 4U;
 
@@ -123,11 +158,18 @@ void Engineer_Chassis_Task(const Chassis_Motor_Group_t *c_motor)
         return;
     }
 
+    if (imu_sub != NULL) {
+        SubGetMessage(imu_sub, &chassis_imu);
+    }
+
+    // 小陀螺模式先做 BMI088 角速度外环；其他模式保持原始角速度命令。
+    const float resolved_vw_mrad_s = Chassis_Resolve_Yaw_Rate(B2B_Chassis_Cmd.vw_mrad_s);
+
     // 麦轮逆解算：vw 用 mrad/s，MecanumResolve 内部换算并做限幅。
     MecanumResolve(chassis_ctrl.target_rpm,
                    B2B_Chassis_Cmd.vx_mm_s,
                    B2B_Chassis_Cmd.vy_mm_s,
-                   B2B_Chassis_Cmd.vw_mrad_s,
+                   resolved_vw_mrad_s,
                    &chassis_mecanum);
     Chassis_Update_Speed_Monitor(c_motor);
 
@@ -169,7 +211,61 @@ static void Chassis_Clear_Output(void)
         PID_Clear(&chassis_ctrl.speed_pid[i]);
         chassis_ctrl.target_rpm[i] = 0.0f;
     }
+    PID_Clear(&chassis_ctrl.yaw_rate_pid);
+    chassis_ctrl.target_vw_rad_s = 0.0f;
+    chassis_ctrl.gyro_z_rad_s = 0.0f;
+    chassis_ctrl.yaw_correction_mrad_s = 0.0f;
+    chassis_ctrl.resolved_vw_mrad_s = 0.0f;
+    chassis_ctrl.yaw_loop_active = 0U;
+    chassis_ctrl.yaw_direction_fault = 0U;
     DJI_Motor_Send(&hfdcan1, 0x200, 0, 0, 0, 0);
+}
+
+// 仅在小陀螺模式使用 BMI088 Z 轴角速度修正；任何异常均退回原始命令。
+static float Chassis_Resolve_Yaw_Rate(float target_vw_mrad_s)
+{
+    const float target_vw_rad_s = target_vw_mrad_s * 0.001f;
+    const float gyro_z_rad_s = chassis_imu.gyro[2] * ENGINEER_CHASSIS_GYRO_Z_SIGN;
+
+    chassis_ctrl.target_vw_rad_s = target_vw_rad_s;
+    chassis_ctrl.gyro_z_rad_s = gyro_z_rad_s;
+    chassis_ctrl.yaw_correction_mrad_s = 0.0f;
+    chassis_ctrl.resolved_vw_mrad_s = target_vw_mrad_s;
+    chassis_ctrl.yaw_loop_active = 0U;
+    chassis_ctrl.yaw_direction_fault = 0U;
+
+    const uint8_t imu_valid = (uint8_t)(imu_ctrl_state == FUSION_RUN &&
+                                        imu_ctrl_flag.fusion_enabled &&
+                                        isfinite(gyro_z_rad_s));
+    const uint8_t spin_requested = (uint8_t)(B2B_Chassis_Cmd.mode == DUALBOARD_CHASSIS_SPIN &&
+                                             isfinite(target_vw_mrad_s) &&
+                                             fabsf(target_vw_mrad_s) > ENGINEER_CHASSIS_YAW_MIN_TARGET_MRAD_S);
+
+    if (!imu_valid || !spin_requested) {
+        PID_Clear(&chassis_ctrl.yaw_rate_pid);
+        return target_vw_mrad_s;
+    }
+
+    // 陀螺仪方向配置错误时，闭环会成为正反馈；检测到反号后立即退回开环。
+    if ((target_vw_rad_s * gyro_z_rad_s) < 0.0f &&
+        fabsf(gyro_z_rad_s) > ENGINEER_CHASSIS_YAW_DIRECTION_CHECK_RAD_S) {
+        PID_Clear(&chassis_ctrl.yaw_rate_pid);
+        chassis_ctrl.yaw_direction_fault = 1U;
+        return target_vw_mrad_s;
+    }
+
+    const float correction_mrad_s = PID_Calculate(&chassis_ctrl.yaw_rate_pid,
+                                                   gyro_z_rad_s,
+                                                   target_vw_rad_s);
+    if (!isfinite(correction_mrad_s)) {
+        PID_Clear(&chassis_ctrl.yaw_rate_pid);
+        return target_vw_mrad_s;
+    }
+
+    chassis_ctrl.yaw_correction_mrad_s = correction_mrad_s;
+    chassis_ctrl.resolved_vw_mrad_s = target_vw_mrad_s + correction_mrad_s;
+    chassis_ctrl.yaw_loop_active = 1U;
+    return chassis_ctrl.resolved_vw_mrad_s;
 }
 
 static void Chassis_Update_Speed_Monitor(const Chassis_Motor_Group_t *c_motor)

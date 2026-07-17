@@ -233,7 +233,7 @@ static void Arm_UpdateRemoteTarget(const DBUS_Typedef *dbus,
     if (Arm_IsDisabled()) return;
     step_scale = Arm_Clamp(dt_s, 0.0f, 0.01f) / 0.001f;
 
-    /* 老车 VT13 机械臂挡位：右摇杆 J1/J2，左摇杆 J3/J4，拨轮 J6，左右自定义键 J5。 */
+
     if (vt13 != NULL && vt13->offline.is_online) {
         if (vt13->Remote.mode_sw == 2U) {
             s_target[ARM_AXIS_J1] -= (float)vt13->Remote.Channel[0] * ARM_VT13_STEP * step_scale;
@@ -245,7 +245,7 @@ static void Arm_UpdateRemoteTarget(const DBUS_Typedef *dbus,
             s_target[ARM_AXIS_J6] += (float)vt13->Remote.wheel * ARM_VT13_STEP * step_scale;
             Arm_LimitTargets();
         }
-        /* 与 Robot_Cmd 保持一致：VT13 在线时完全屏蔽 DBUS，避免双遥控源叠加。 */
+
         return;
     }
 
@@ -450,6 +450,8 @@ void Engineer_Arm_Task(const Arm_Motor_Group_t *feedback,
                 const Arm_Cascade_Output_t cascade =
                     Arm_JointController_Cascade(axis, s_target[axis],
                                                 motor->pos, motor->vel, dt_s);
+                /* 串级PID输出反馈力矩；已有模型的轴在总力矩中同时叠加重力前馈。 */
+                gravity_tau = Arm_JointController_Gravity(axis, joint_position);
                 PID_Clear(&s_external_pid[axis]);
                 impedance_tau = cascade.torque;
                 Arm_Control_Debug.cascade_target_velocity[axis] = cascade.target_velocity;

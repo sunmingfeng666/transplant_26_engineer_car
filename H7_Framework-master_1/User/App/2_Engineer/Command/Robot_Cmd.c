@@ -204,10 +204,18 @@ static void Cmd_Update_From_Remote(void)
             Cmd_Apply_Output(DUALBOARD_CHASSIS_FREE, 0.0f, 0.0f, 0.0f);
         }
     } else if (DBUS.Remote.S1 == 1U) {
-        Cmd_Apply_Output(DUALBOARD_CHASSIS_FREE,
-                         (float)DBUS.Remote.CH1 * RC_ROCKER_XY_COEF,
-                         (float)DBUS.Remote.CH0 * RC_ROCKER_XY_COEF,
-                         (float)DBUS.Remote.CH2 * RC_ROCKER_VW_COEF);
+        // 纯 DBUS 底盘模式：S2 下挡进入小陀螺；上/中挡保持普通底盘控制。
+        // 小陀螺仍允许 CH0/CH1 平移，CH2 暂不参与旋转，避免与固定角速度冲突。
+        const float vx = (float)DBUS.Remote.CH1 * RC_ROCKER_XY_COEF;
+        const float vy = (float)DBUS.Remote.CH0 * RC_ROCKER_XY_COEF;
+        if (DBUS.Remote.S2 == 2U) {
+            Cmd_Apply_Output(DUALBOARD_CHASSIS_SPIN, vx, vy, 5.0f);
+        } else {
+            Cmd_Apply_Output(DUALBOARD_CHASSIS_FREE,
+                             vx,
+                             vy,
+                             (float)DBUS.Remote.CH2 * RC_ROCKER_VW_COEF);
+        }
     } else {
         Cmd_Apply_Output(DUALBOARD_CHASSIS_FREE, 0.0f, 0.0f, 0.0f);
     }

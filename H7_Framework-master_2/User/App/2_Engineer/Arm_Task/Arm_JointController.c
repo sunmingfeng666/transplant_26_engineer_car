@@ -5,6 +5,7 @@
 #include "DM_Motor.h"
 
 #define ARM_AXIS_J2 1U
+#define ARM_AXIS_J3 2U
 #define ARM_AXIS_J4 3U
 #define ARM_AXIS_J5 4U
 #define ARM_AXIS_J6 5U
@@ -17,10 +18,10 @@ static float s_cascade_integral_tau[ARM_JOINT_COUNT];
 
 volatile Arm_Control_Config_t Arm_Control_Config = {
     .master_enable = 1U,
-    /* J1由Arm_IsForcePvAxis强制PV(此处值不生效)；J2~J6统一MIT模式(电机MIT_MODE+板端阻抗PID)。 */
+    /* J1强制PV；J2~J6运行位置-速度串级PID，其中J2/J4/J5叠加重力前馈，串级轴均由MIT模式下发力矩。 */
     .axis_mode = {
-        ARM_MODE_POSITION, ARM_MODE_MIT, ARM_MODE_MIT,
-        ARM_MODE_MIT, ARM_MODE_MIT, ARM_MODE_CASCADE,
+        ARM_MODE_POSITION, ARM_MODE_CASCADE, ARM_MODE_CASCADE,
+        ARM_MODE_CASCADE, ARM_MODE_CASCADE, ARM_MODE_CASCADE,
     },
     .gravity_scale = {0.0f, 1.0f, 0.0f, 1.0f, 1.0f, 0.0f},
     .impedance_kp = {0.0f, 16.0f, 12.0f, 12.0f, 12.0f, 8.0f},
@@ -28,11 +29,29 @@ volatile Arm_Control_Config_t Arm_Control_Config = {
     .impedance_kd = {0.0f, 4.0f, 4.0f, 1.0f, 3.0f, 3.0f},
     .impedance_i_limit = {0.0f, 0.5f, 0.5f, 0.5f, 0.5f, 0.5f},
     .torque_limit = {20.0f, 20.0f, 20.0f, 20.0f, 20.0f, 2.0f},
-    .cascade_position_kp = {[ARM_AXIS_J6] = 5.0f},
-    .cascade_velocity_kp = {[ARM_AXIS_J6] = 1.0f},
-    .cascade_velocity_ki = {[ARM_AXIS_J6] = 2.0f},
-    .cascade_velocity_limit = {[ARM_AXIS_J6] = 4.0f},
-    .cascade_integral_limit = {[ARM_AXIS_J6] = 0.5f},
+    /* 新增轴先关闭积分并使用保守增益；J6保留已经调过的参数。 */
+    .cascade_position_kp = {
+        [ARM_AXIS_J2] = 15.0f, [ARM_AXIS_J3] = 8.0f,
+        [ARM_AXIS_J4] = 16.0f, [ARM_AXIS_J5] = 22.0f,
+        [ARM_AXIS_J6] = 10.0f,
+    },
+    .cascade_velocity_kp = {
+        [ARM_AXIS_J2] = 2.3f, [ARM_AXIS_J3] = 2.1f,
+        [ARM_AXIS_J4] = 2.0f, [ARM_AXIS_J5] = 1.0f,
+        [ARM_AXIS_J6] = 1.0f,
+    },
+    .cascade_velocity_ki = {[ARM_AXIS_J2] = 0.01f,[ARM_AXIS_J4] = 0.01f
+        ,[ARM_AXIS_J5] = 0.03f,[ARM_AXIS_J6] = 2.0f},
+    .cascade_velocity_limit = {
+        [ARM_AXIS_J2] = 1.8f, [ARM_AXIS_J3] = 10.0f,
+        [ARM_AXIS_J4] = 6.0f, [ARM_AXIS_J5] = 8.0f,
+        [ARM_AXIS_J6] = 10.0f,
+    },
+    .cascade_integral_limit = {
+        [ARM_AXIS_J2] = 1.0f, [ARM_AXIS_J3] = 0.8f,
+        [ARM_AXIS_J4] = 0.6f, [ARM_AXIS_J5] = 0.5f,
+        [ARM_AXIS_J6] = 0.5f,
+    },
     .ramp_time_s = 1.0f,
     .gravity = {
         [ARM_AXIS_J2] = {
