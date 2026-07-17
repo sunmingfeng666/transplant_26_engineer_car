@@ -11,6 +11,7 @@
 #include "stm32h7xx_hal.h"
 
 uint8_t VT13_RX_DATA[21]__attribute__((section(".RAM_D2")));
+uint8_t VT13_RAW_SNAPSHOT[21];
 VT13_Typedef VT13 = { 0 };
 
 static uint16_t get_crc16_check_sum(uint8_t *p_msg, uint16_t len, uint16_t crc16);
@@ -25,12 +26,15 @@ static void VT_HandleKeyToggle(uint8_t is_pressed, uint8_t *lock_flag, uint8_t *
  */
 void VT13_Resolved(uint8_t* Data, void *device_ptr, uint16_t size)
 {
+    if (Data == NULL || device_ptr == NULL || size != sizeof(VT13_RAW_SNAPSHOT)) return;
     VT13_Typedef *VT13 = device_ptr;
     VT13_FrameTypeDef* frame = (VT13_FrameTypeDef*)Data;
     VT13->offline.last_feed_tick = HAL_GetTick();
     // 校验帧头 0xA9, 0x53 及整个数据帧的 CRC16
     if (frame->header1 == 0XA9 && frame->header2 == 0X53 && verify_crc16_check_sum(Data, 21))
     {
+        // 只保存通过 VT13 自身 CRC16 的完整原始帧，避免向另一块板转发坏帧。
+        memcpy(VT13_RAW_SNAPSHOT, Data, sizeof(VT13_RAW_SNAPSHOT));
         VT13->CRC_flag = true;
 
         VT13->Remote.Channel[0] = (int16_t)frame->channel0 - 1024;

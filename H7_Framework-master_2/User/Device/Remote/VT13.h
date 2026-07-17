@@ -169,6 +169,7 @@ typedef union {
 } VT13_UNION_Typdef;
 
 extern uint8_t VT13_RX_DATA[21];
+extern uint8_t VT13_RAW_SNAPSHOT[21];
 extern VT13_Typedef VT13;
 extern VT13_UNION_Typdef VT13_UNION;
 /**

@@ -1,127 +1,178 @@
-//
-// Created by CaoKangqi on 2026/6/22.
-//
 #include "Comm_DualBoard.h"
-#include "Message_Center.h"
 #include "BSP_FDCAN.h"
 #include "BSP_DWT.h"
 #include "stm32h7xx_hal.h"
 #include <string.h>
 
+#define DUALBOARD_SOF 0xA5U
+#define DUALBOARD_TAIL 0x5AU
+#define DUALBOARD_VERSION 1U
+#define DUALBOARD_ENGINEER_VERSION 2U
+#define DUALBOARD_REMOTE_VERSION 3U
+#define CHASSIS_CHECKSUM_INDEX 10U
+#define ENGINEER_CHECKSUM_INDEX 22U
+#define ENGINEER_FEEDBACK_CHECKSUM_INDEX 22U
+#define REMOTE_CRC_INDEX 57U
+
 B2B_Tx_t Tx_Data = {0};
 B2B_Rx_t Rx_Data = {0};
-// 接收端共享底盘命令，底盘控制任务会读取它。
 B2B_Chassis_Cmd_t B2B_Chassis_Cmd = {0};
-// 接收端共享底盘反馈，遥控板后续 UI/调试逻辑会读取它。
+B2B_Picture_Cmd_t B2B_Picture_Cmd = {0};
 B2B_Chassis_Feedback_t B2B_Chassis_Feedback = {0};
+B2B_Engineer_Feedback_t B2B_Engineer_Feedback = {0};
 
-// CAN 传输层切片状态机
 typedef struct {
-    uint8_t  buf[DUALBOARD_MAX_PAYLOAD];
+    uint8_t buf[DUALBOARD_MAX_PAYLOAD];
     uint16_t total_len;
     uint16_t offset;
-    uint8_t  seq;
+    uint8_t seq;
     uint32_t last_tick;
-    bool     is_sending;
+    bool is_sending;
 } CAN_TP_Tx_State_t;
 
 typedef struct {
-    uint8_t  buf[DUALBOARD_MAX_PAYLOAD];
+    uint8_t buf[DUALBOARD_MAX_PAYLOAD];
     uint16_t current_len;
-    uint8_t  next_seq;
-    bool     is_active;
+    uint8_t next_seq;
+    bool is_active;
 } CAN_TP_Rx_t;
 
 static CAN_TP_Tx_State_t can_tx = {0};
-static CAN_TP_Rx_t       can_rx = {0};
-
-// UART 暂存缓冲区
-static uint8_t  uart_rx_buf[DUALBOARD_MAX_PAYLOAD];
+static CAN_TP_Rx_t can_rx = {0};
+static uint8_t uart_rx_buf[DUALBOARD_MAX_PAYLOAD];
 static uint16_t uart_rx_len = 0;
-// 每发送一帧底盘命令自增一次，便于后续统计丢帧。
+
 static uint8_t chassis_tx_seq = 0;
-// 每发送一帧底盘反馈自增一次，和命令帧分开计数。
+static uint8_t engineer_tx_seq = 0;
+static uint8_t remote_tx_seq = 0;
 static uint8_t chassis_feedback_tx_seq = 0;
+static uint8_t engineer_feedback_tx_seq = 0;
 static B2B_Chassis_Frame_t chassis_tx_frame;
+static B2B_Engineer_Frame_t engineer_tx_frame;
+static B2B_Remote_Frame_t remote_tx_frame;
 static B2B_Chassis_Frame_t chassis_feedback_tx_frame;
+static B2B_Engineer_Feedback_Frame_t engineer_feedback_tx_frame;
+
+_Static_assert(sizeof(B2B_Engineer_Frame_t) == DUALBOARD_ENGINEER_FRAME_LEN,
+               "B2B engineer command frame size mismatch");
+_Static_assert(sizeof(B2B_Engineer_Feedback_Frame_t) == DUALBOARD_ENGINEER_FEEDBACK_FRAME_LEN,
+               "B2B engineer feedback frame size mismatch");
+_Static_assert(sizeof(B2B_Aux_Command_t) == 14U, "B2B auxiliary command size mismatch");
+_Static_assert(sizeof(B2B_Remote_Frame_t) == DUALBOARD_REMOTE_FRAME_LEN,
+               "B2B remote frame size mismatch");
 
 static int16_t Float_To_Int16(float value)
 {
-    // 打包到 12 字节帧前先限幅，避免 float 超出 int16_t 范围。
     if (value > 32767.0f) return 32767;
     if (value < -32768.0f) return -32768;
     return (int16_t)value;
 }
 
-static uint8_t Chassis_Checksum(const B2B_Chassis_Frame_t *frame)
+static uint8_t Frame_Checksum(const void *frame, uint8_t checksum_index)
 {
-    // 前 10 字节累加和的低 8 位，checksum 和 tail 不参与计算。
     const uint8_t *bytes = (const uint8_t *)frame;
     uint16_t sum = 0;
-    for (uint8_t i = 0; i < 10; i++) {
+    for (uint8_t i = 0; i < checksum_index; i++) {
         sum += bytes[i];
     }
     return (uint8_t)sum;
 }
 
-static void Parse_Chassis_Frame(const B2B_Chassis_Frame_t *frame)
+static uint16_t Frame_CRC16(const uint8_t *data, uint16_t len)
 {
-    if (frame == NULL) return;
-    // 先校验帧头、帧尾、版本和校验和，坏帧不更新共享数据。
-    if (frame->sof != 0xA5U || frame->tail != 0x5AU || frame->version != 1U) return;
-    if (frame->checksum != Chassis_Checksum(frame)) return;
-
-    if (frame->mode == DUALBOARD_FRAME_TYPE_FEEDBACK) {
-        B2B_Chassis_Feedback.status = (DualBoard_Chassis_Feedback_Status_e)frame->vx_mm_s;
-        B2B_Chassis_Feedback.motor_online_bits = (uint8_t)frame->vy_mm_s;
-        B2B_Chassis_Feedback.error_code = frame->vw_mrad_s;
-        B2B_Chassis_Feedback.last_seq = frame->seq;
-        B2B_Chassis_Feedback.last_update_ms = HAL_GetTick();
-        B2B_Chassis_Feedback.is_online = true;
-        return;
+    uint16_t crc = 0xFFFFU;
+    for (uint16_t i = 0U; i < len; i++) {
+        crc ^= (uint16_t)data[i] << 8U;
+        for (uint8_t bit = 0U; bit < 8U; bit++) {
+            crc = (crc & 0x8000U) ? (uint16_t)((crc << 1U) ^ 0x1021U) : (uint16_t)(crc << 1U);
+        }
     }
+    return crc;
+}
 
-    // 其他 0/1/2 类型按底盘命令处理，超过已知模式的帧丢弃。
-    if (frame->mode > DUALBOARD_CHASSIS_SPIN) return;
-    B2B_Chassis_Cmd.mode = (DualBoard_Chassis_Mode_e)frame->mode;
-    B2B_Chassis_Cmd.vx_mm_s = (float)frame->vx_mm_s;
-    B2B_Chassis_Cmd.vy_mm_s = (float)frame->vy_mm_s;
-    B2B_Chassis_Cmd.vw_mrad_s = (float)frame->vw_mrad_s;
-    B2B_Chassis_Cmd.last_seq = frame->seq;
-    B2B_Chassis_Cmd.last_update_ms = HAL_GetTick();
-    B2B_Chassis_Cmd.is_online = true;
+static bool Chassis_Frame_Is_Valid(const B2B_Chassis_Frame_t *frame)
+{
+    if (frame == NULL) return false;
+    if (frame->sof != DUALBOARD_SOF || frame->tail != DUALBOARD_TAIL) return false;
+    if (frame->version != DUALBOARD_VERSION) return false;
+    return frame->checksum == Frame_Checksum(frame, CHASSIS_CHECKSUM_INDEX);
+}
+
+static bool Engineer_Frame_Is_Valid(const B2B_Engineer_Frame_t *frame)
+{
+    if (frame == NULL) return false;
+    if (frame->sof != DUALBOARD_SOF || frame->tail != DUALBOARD_TAIL) return false;
+    if (frame->version != DUALBOARD_ENGINEER_VERSION) return false;
+    return frame->checksum == Frame_Checksum(frame, ENGINEER_CHECKSUM_INDEX);
+}
+
+static bool Remote_Frame_Is_Valid(const B2B_Remote_Frame_t *frame)
+{
+    if (frame == NULL || frame->sof != DUALBOARD_SOF || frame->tail != DUALBOARD_TAIL) return false;
+    if (frame->version != DUALBOARD_REMOTE_VERSION) return false;
+    return frame->crc16 == Frame_CRC16((const uint8_t *)frame, REMOTE_CRC_INDEX);
+}
+
+// 命令帧收件箱：通信层收到并通过校验的原始帧暂存于此，等 App 命令层取走解析。
+// 单缓冲、后到覆盖先到（控制场景取最新命令即可），pending 最后置位保证数据完整。
+static uint8_t  cmd_inbox_buf[DUALBOARD_MAX_PAYLOAD];
+static uint16_t cmd_inbox_len = 0;
+static volatile uint8_t cmd_inbox_pending = 0;
+
+static void Inbox_Store(const uint8_t *buf, uint16_t len)
+{
+    if (buf == NULL || len == 0U || len > sizeof(cmd_inbox_buf)) return;
+    memcpy(cmd_inbox_buf, buf, len);
+    cmd_inbox_len = len;
+    cmd_inbox_pending = 1U;
+}
+
+uint8_t DualBoard_Take_Cmd_Frame(uint8_t *out, uint16_t out_cap, uint16_t *out_len)
+{
+    if (out == NULL || out_len == NULL) return 0U;
+
+    uint32_t primask = __get_PRIMASK();
+    __disable_irq();
+    uint8_t got = 0U;
+    if (cmd_inbox_pending && cmd_inbox_len <= out_cap) {
+        memcpy(out, cmd_inbox_buf, cmd_inbox_len);
+        *out_len = cmd_inbox_len;
+        cmd_inbox_pending = 0U;
+        got = 1U;
+    }
+    if (primask == 0U) __enable_irq();
+    return got;
 }
 
 void DualBoard_Comm_Init(void)
 {
-    memset(&Tx_Data, 0, sizeof(B2B_Tx_t));
-    memset(&Rx_Data, 0, sizeof(B2B_Rx_t));
+    memset(&Tx_Data, 0, sizeof(Tx_Data));
+    memset(&Rx_Data, 0, sizeof(Rx_Data));
     memset(&B2B_Chassis_Cmd, 0, sizeof(B2B_Chassis_Cmd));
+    memset(&B2B_Picture_Cmd, 0, sizeof(B2B_Picture_Cmd));
     memset(&B2B_Chassis_Feedback, 0, sizeof(B2B_Chassis_Feedback));
+    memset(&B2B_Engineer_Feedback, 0, sizeof(B2B_Engineer_Feedback));
+    cmd_inbox_len = 0;
+    cmd_inbox_pending = 0U;
 }
 
-/**
- * @brief 裸数据发送接口
- */
 uint8_t DualBoard_Send(Comm_Link_e link, void *data_ptr, uint16_t len)
 {
-    if (data_ptr == NULL || len > DUALBOARD_MAX_PAYLOAD) return 1;
+    if (data_ptr == NULL || len > DUALBOARD_MAX_PAYLOAD) return 1U;
 
     if (link == LINK_UART) {
-        // 串口：直接把裸结构体扔给 DMA 发送
-        // HAL_UART_Transmit_DMA(&huart1, (uint8_t*)data_ptr, len);
-        return 0;
+        return 0U;
     }
     if (link == LINK_CAN) {
-        if (can_tx.is_sending) return 2;
+        if (can_tx.is_sending) return 2U;
         can_tx.total_len = len;
         memcpy(can_tx.buf, data_ptr, len);
         can_tx.offset = 0;
         can_tx.seq = 0;
         can_tx.is_sending = true;
-        return 0;
+        return 0U;
     }
-    return 1;
+    return 1U;
 }
 
 uint8_t DualBoard_Send_Chassis(UART_HandleTypeDef *huart,
@@ -130,23 +181,112 @@ uint8_t DualBoard_Send_Chassis(UART_HandleTypeDef *huart,
                                float vy_mm_s,
                                float vw_mrad_s)
 {
-    if (huart == NULL) return 1;
-    // 避免 UART 忙时重入发送。当前用短阻塞发送，配合 5ms/20ms 周期足够轻。
-    if (huart->gState != HAL_UART_STATE_READY) return 2;
+    if (huart == NULL) return 1U;
+    if (huart->gState != HAL_UART_STATE_READY) return 2U;
 
-    // 底盘命令帧和旧的 B2B_Tx_t 裸结构保持独立，避免互相污染。
-    chassis_tx_frame.sof = 0xA5U;
-    chassis_tx_frame.version = 1U;
+    chassis_tx_frame.sof = DUALBOARD_SOF;
+    chassis_tx_frame.version = DUALBOARD_VERSION;
     chassis_tx_frame.seq = chassis_tx_seq++;
     chassis_tx_frame.mode = (uint8_t)mode;
     chassis_tx_frame.vx_mm_s = Float_To_Int16(vx_mm_s);
     chassis_tx_frame.vy_mm_s = Float_To_Int16(vy_mm_s);
     chassis_tx_frame.vw_mrad_s = Float_To_Int16(vw_mrad_s);
     chassis_tx_frame.checksum = 0U;
-    chassis_tx_frame.tail = 0x5AU;
-    chassis_tx_frame.checksum = Chassis_Checksum(&chassis_tx_frame);
+    chassis_tx_frame.tail = DUALBOARD_TAIL;
+    chassis_tx_frame.checksum = Frame_Checksum(&chassis_tx_frame, CHASSIS_CHECKSUM_INDEX);
 
     return (HAL_UART_Transmit(huart, (uint8_t *)&chassis_tx_frame, sizeof(chassis_tx_frame), 2U) == HAL_OK) ? 0U : 2U;
+}
+
+uint8_t DualBoard_Send_Engineer(UART_HandleTypeDef *huart,
+                                DualBoard_Chassis_Mode_e mode,
+                                float vx_mm_s,
+                                float vy_mm_s,
+                                float vw_mrad_s,
+                                int32_t picture_lift,
+                                int32_t picture_transverse,
+                                DualBoard_Mechanism_Action_e mechanism_action,
+                                uint8_t store_slot,
+                                uint8_t action_seq,
+                                uint8_t ui_flags)
+{
+    if (huart == NULL) return 1U;
+    if (huart->gState != HAL_UART_STATE_READY) return 2U;
+    if (mechanism_action > DUALBOARD_ACTION_CLEAR_FAULT || store_slot > 3U) return 1U;
+
+    engineer_tx_frame.sof = DUALBOARD_SOF;
+    engineer_tx_frame.version = DUALBOARD_ENGINEER_VERSION;
+    engineer_tx_frame.seq = engineer_tx_seq++;
+    engineer_tx_frame.mode = (uint8_t)mode;
+    engineer_tx_frame.vx_mm_s = Float_To_Int16(vx_mm_s);
+    engineer_tx_frame.vy_mm_s = Float_To_Int16(vy_mm_s);
+    engineer_tx_frame.vw_mrad_s = Float_To_Int16(vw_mrad_s);
+    engineer_tx_frame.picture_lift = picture_lift;
+    engineer_tx_frame.picture_transverse = picture_transverse;
+    engineer_tx_frame.mechanism_action = (uint8_t)mechanism_action;
+    engineer_tx_frame.store_slot = store_slot;
+    engineer_tx_frame.action_seq = action_seq;
+    engineer_tx_frame.ui_flags = ui_flags;
+    engineer_tx_frame.checksum = 0U;
+    engineer_tx_frame.tail = DUALBOARD_TAIL;
+    engineer_tx_frame.checksum = Frame_Checksum(&engineer_tx_frame, ENGINEER_CHECKSUM_INDEX);
+
+    return (HAL_UART_Transmit(huart, (uint8_t *)&engineer_tx_frame, sizeof(engineer_tx_frame), 2U) == HAL_OK) ? 0U : 2U;
+}
+
+uint8_t DualBoard_Send_Remote(UART_HandleTypeDef *huart,
+                              const uint8_t dbus_raw[18],
+                              const uint8_t vt13_raw[21],
+                              uint8_t remote_online_bits,
+                              const B2B_Aux_Command_t *auxiliary)
+{
+    if (huart == NULL || dbus_raw == NULL || vt13_raw == NULL || auxiliary == NULL) return 1U;
+    if (huart->gState != HAL_UART_STATE_READY) return 2U;
+
+    remote_tx_frame.sof = DUALBOARD_SOF;
+    remote_tx_frame.version = DUALBOARD_REMOTE_VERSION;
+    remote_tx_frame.seq = remote_tx_seq++;
+    remote_tx_frame.remote_online_bits = remote_online_bits;
+    memcpy(remote_tx_frame.dbus_raw, dbus_raw, sizeof(remote_tx_frame.dbus_raw));
+    memcpy(remote_tx_frame.vt13_raw, vt13_raw, sizeof(remote_tx_frame.vt13_raw));
+    remote_tx_frame.auxiliary = *auxiliary;
+    remote_tx_frame.crc16 = Frame_CRC16((const uint8_t *)&remote_tx_frame, REMOTE_CRC_INDEX);
+    remote_tx_frame.tail = DUALBOARD_TAIL;
+
+    // 60B@115200 约 5.2ms；静态帧配合 UART busy 检查，100Hz 非阻塞发送不会覆盖在途数据。
+    return (HAL_UART_Transmit_IT(huart, (uint8_t *)&remote_tx_frame,
+                                 sizeof(remote_tx_frame)) == HAL_OK) ? 0U : 2U;
+}
+
+uint8_t DualBoard_Send_Engineer_Feedback(UART_HandleTypeDef *huart,
+                                         const B2B_Engineer_Feedback_t *feedback)
+{
+    if (huart == NULL || feedback == NULL) return 1U;
+    if (huart->gState != HAL_UART_STATE_READY) return 2U;
+
+    engineer_feedback_tx_frame.sof = DUALBOARD_SOF;
+    engineer_feedback_tx_frame.version = DUALBOARD_ENGINEER_VERSION;
+    engineer_feedback_tx_frame.seq = engineer_feedback_tx_seq++;
+    engineer_feedback_tx_frame.type = DUALBOARD_FRAME_TYPE_ENGINEER_FEEDBACK;
+    engineer_feedback_tx_frame.status = (uint8_t)feedback->status;
+    engineer_feedback_tx_frame.chassis_online_bits = feedback->chassis_online_bits;
+    engineer_feedback_tx_frame.mechanism_online_bits = feedback->mechanism_online_bits;
+    engineer_feedback_tx_frame.limit_bits = feedback->limit_bits;
+    engineer_feedback_tx_frame.action_bits = feedback->action_bits;
+    engineer_feedback_tx_frame.error_code = feedback->error_code;
+    engineer_feedback_tx_frame.completed_action_seq = feedback->completed_action_seq;
+    engineer_feedback_tx_frame.picture_lift_pos = feedback->picture_lift_pos;
+    engineer_feedback_tx_frame.picture_transverse_pos = feedback->picture_transverse_pos;
+    engineer_feedback_tx_frame.store_pos_mrad = feedback->store_pos_mrad;
+    engineer_feedback_tx_frame.checksum = 0U;
+    engineer_feedback_tx_frame.tail = DUALBOARD_TAIL;
+    engineer_feedback_tx_frame.checksum =
+        Frame_Checksum(&engineer_feedback_tx_frame, ENGINEER_FEEDBACK_CHECKSUM_INDEX);
+
+    // 中断发送，避免在 1kHz 控制任务里阻塞(轮询发 24B@115200 约 2ms)。
+    // 帧缓冲为静态，gState 就绪判断已防重入/覆盖。
+    return (HAL_UART_Transmit_IT(huart, (uint8_t *)&engineer_feedback_tx_frame,
+                                 sizeof(engineer_feedback_tx_frame)) == HAL_OK) ? 0U : 2U;
 }
 
 uint8_t DualBoard_Send_Chassis_Feedback(UART_HandleTypeDef *huart,
@@ -154,20 +294,19 @@ uint8_t DualBoard_Send_Chassis_Feedback(UART_HandleTypeDef *huart,
                                         uint8_t motor_online_bits,
                                         int16_t error_code)
 {
-    if (huart == NULL) return 1;
-    // 反馈帧也很短，沿用短阻塞发送，避免 TX DMA circular 反复发送旧帧。
-    if (huart->gState != HAL_UART_STATE_READY) return 2;
+    if (huart == NULL) return 1U;
+    if (huart->gState != HAL_UART_STATE_READY) return 2U;
 
-    chassis_feedback_tx_frame.sof = 0xA5U;
-    chassis_feedback_tx_frame.version = 1U;
+    chassis_feedback_tx_frame.sof = DUALBOARD_SOF;
+    chassis_feedback_tx_frame.version = DUALBOARD_VERSION;
     chassis_feedback_tx_frame.seq = chassis_feedback_tx_seq++;
     chassis_feedback_tx_frame.mode = DUALBOARD_FRAME_TYPE_FEEDBACK;
     chassis_feedback_tx_frame.vx_mm_s = (int16_t)status;
     chassis_feedback_tx_frame.vy_mm_s = (int16_t)motor_online_bits;
     chassis_feedback_tx_frame.vw_mrad_s = error_code;
     chassis_feedback_tx_frame.checksum = 0U;
-    chassis_feedback_tx_frame.tail = 0x5AU;
-    chassis_feedback_tx_frame.checksum = Chassis_Checksum(&chassis_feedback_tx_frame);
+    chassis_feedback_tx_frame.tail = DUALBOARD_TAIL;
+    chassis_feedback_tx_frame.checksum = Frame_Checksum(&chassis_feedback_tx_frame, CHASSIS_CHECKSUM_INDEX);
 
     return (HAL_UART_Transmit(huart, (uint8_t *)&chassis_feedback_tx_frame, sizeof(chassis_feedback_tx_frame), 2U) == HAL_OK) ? 0U : 2U;
 }
@@ -175,9 +314,18 @@ uint8_t DualBoard_Send_Chassis_Feedback(UART_HandleTypeDef *huart,
 bool DualBoard_Chassis_Is_Online(void)
 {
     if (!B2B_Chassis_Cmd.is_online) return false;
-    // 底盘控制任务会把超时当成安全模式处理。
     if ((HAL_GetTick() - B2B_Chassis_Cmd.last_update_ms) > DUALBOARD_CHASSIS_TIMEOUT_MS) {
         B2B_Chassis_Cmd.is_online = false;
+        return false;
+    }
+    return true;
+}
+
+bool DualBoard_Picture_Is_Online(void)
+{
+    if (!B2B_Picture_Cmd.is_online) return false;
+    if ((HAL_GetTick() - B2B_Picture_Cmd.last_update_ms) > DUALBOARD_CHASSIS_TIMEOUT_MS) {
+        B2B_Picture_Cmd.is_online = false;
         return false;
     }
     return true;
@@ -186,7 +334,6 @@ bool DualBoard_Chassis_Is_Online(void)
 bool DualBoard_Chassis_Feedback_Is_Online(void)
 {
     if (!B2B_Chassis_Feedback.is_online) return false;
-    // 遥控板可用这个接口判断底盘板回传是否还在线。
     if ((HAL_GetTick() - B2B_Chassis_Feedback.last_update_ms) > DUALBOARD_CHASSIS_TIMEOUT_MS) {
         B2B_Chassis_Feedback.is_online = false;
         return false;
@@ -194,26 +341,32 @@ bool DualBoard_Chassis_Feedback_Is_Online(void)
     return true;
 }
 
-/**
- * @brief 负责 CAN 硬件单帧 (8字节) 的非阻塞切片续发
- */
+bool DualBoard_Engineer_Feedback_Is_Online(void)
+{
+    if (!B2B_Engineer_Feedback.is_online) return false;
+    if ((HAL_GetTick() - B2B_Engineer_Feedback.last_update_ms) > DUALBOARD_CHASSIS_TIMEOUT_MS) {
+        B2B_Engineer_Feedback.is_online = false;
+        return false;
+    }
+    return true;
+}
+
 void DualBoard_Task_Poll(void)
 {
     if (!can_tx.is_sending) return;
 
     uint32_t now = DWT->CYCCNT;
-    uint32_t interval_ticks = 100 * 550; // 帧间隔延迟
-    if (can_tx.seq > 0 && (now - can_tx.last_tick) < interval_ticks) return;
+    uint32_t interval_ticks = 100U * 550U;
+    if (can_tx.seq > 0U && (now - can_tx.last_tick) < interval_ticks) return;
 
     uint8_t tx_buf[8];
     uint16_t remain = can_tx.total_len - can_tx.offset;
-    uint8_t chunk_size = (remain > 7) ? 7 : (uint8_t)remain;
-    uint8_t is_last = (remain <= 7) ? 1 : 0;
+    uint8_t chunk_size = (remain > 7U) ? 7U : (uint8_t)remain;
+    uint8_t is_last = (remain <= 7U) ? 1U : 0U;
 
-    // CAN 传输层控制头：最高位代表是否为最后一帧，低7位为序列号
-    tx_buf[0] = (is_last << 7) | (can_tx.seq & 0x7F);
+    tx_buf[0] = (uint8_t)((is_last << 7U) | (can_tx.seq & 0x7FU));
     memcpy(&tx_buf[1], &can_tx.buf[can_tx.offset], chunk_size);
-    if (chunk_size < 7) memset(&tx_buf[1 + chunk_size], 0, 7 - chunk_size);
+    if (chunk_size < 7U) memset(&tx_buf[1 + chunk_size], 0, 7U - chunk_size);
 
     if (FDCAN_Send_Msg(&hfdcan1, 0x500, tx_buf, 8) == 0) {
         can_tx.offset += chunk_size;
@@ -223,20 +376,17 @@ void DualBoard_Task_Poll(void)
     }
 }
 
-/**
- * @brief CAN 切片重组回调
- */
 void DualBoard_CAN_Rx(void *device_ptr, uint8_t *data)
 {
+    (void)device_ptr;
     if (data == NULL) return;
 
-    uint8_t dlc_len = 8;
     uint8_t ctrl = data[0];
-    uint8_t is_last = (ctrl >> 7) & 0x01;
-    uint8_t seq = ctrl & 0x7F;
-    uint8_t payload_len = dlc_len - 1;
+    uint8_t is_last = (uint8_t)((ctrl >> 7U) & 0x01U);
+    uint8_t seq = ctrl & 0x7FU;
+    uint8_t payload_len = 7U;
 
-    if (seq == 0) {
+    if (seq == 0U) {
         can_rx.is_active = true;
         can_rx.current_len = 0;
         can_rx.next_seq = 0;
@@ -249,9 +399,7 @@ void DualBoard_CAN_Rx(void *device_ptr, uint8_t *data)
             can_rx.next_seq++;
 
             if (is_last) {
-                if (can_rx.current_len >= sizeof(B2B_Rx_t)) {
-                    memcpy(&Rx_Data, can_rx.buf, sizeof(B2B_Rx_t));
-                }
+                DualBoard_UART_Rx(can_rx.buf, can_rx.current_len);
                 can_rx.is_active = false;
             }
         } else {
@@ -260,27 +408,43 @@ void DualBoard_CAN_Rx(void *device_ptr, uint8_t *data)
     }
 }
 
-/**
- * @brief UART 裸流接收回调
- */
 void DualBoard_UART_Rx(uint8_t *Buff, uint16_t Size)
 {
-    if (Buff == NULL || Size == 0) return;
+    if (Buff == NULL || Size == 0U) return;
 
-    // 新移植路径：解析遥控板/底盘板之间的固定长度底盘帧。
-    if (Size == sizeof(B2B_Chassis_Frame_t)) {
-        Parse_Chassis_Frame((const B2B_Chassis_Frame_t *)Buff);
+    // 通信层只做完整性校验+入库，不解析业务字段。解析交给 App 命令层。
+    // 60B：工程车 V3 原始遥控帧；通信层只校验并交付 App。
+    if (Size == sizeof(B2B_Remote_Frame_t)) {
+        if (Remote_Frame_Is_Valid((const B2B_Remote_Frame_t *)Buff)) {
+            Inbox_Store(Buff, Size);
+        }
         return;
     }
 
-    // 兼容旧框架路径：仍然保留原始 B2B_Rx_t 裸结构接收。
+    // 24B：旧工程车命令帧或整车反馈帧。反馈帧本板(执行板)不消费，直接丢弃。
+    if (Size == sizeof(B2B_Engineer_Frame_t)) {
+        if (Buff[3] == DUALBOARD_FRAME_TYPE_ENGINEER_FEEDBACK) return;
+        if (Engineer_Frame_Is_Valid((const B2B_Engineer_Frame_t *)Buff)) {
+            Inbox_Store(Buff, Size);
+        }
+        return;
+    }
+
+    // 12B：旧版底盘命令帧。
+    if (Size == sizeof(B2B_Chassis_Frame_t)) {
+        if (Chassis_Frame_Is_Valid((const B2B_Chassis_Frame_t *)Buff)) {
+            Inbox_Store(Buff, Size);
+        }
+        return;
+    }
+
     if (Size == sizeof(B2B_Rx_t)) {
         memcpy(&Rx_Data, Buff, sizeof(B2B_Rx_t));
         return;
     }
+
     for (uint16_t i = 0; i < Size; i++) {
         uart_rx_buf[uart_rx_len++] = Buff[i];
-
         if (uart_rx_len >= sizeof(B2B_Rx_t)) {
             memcpy(&Rx_Data, uart_rx_buf, sizeof(B2B_Rx_t));
             uart_rx_len = 0;

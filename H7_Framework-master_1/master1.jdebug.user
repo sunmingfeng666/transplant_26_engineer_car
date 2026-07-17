@@ -1,0 +1,58 @@
+
+
+OpenDocument="Comm_DualBoard.h", FilePath="E:/BaiduSyncdisk/strong/daima/test_transplant_26_engineer_car/test_transplant_26_engineer_car/H7_Framework-master_1/User/System/Communication/Comm_DualBoard.h", Line=113
+OpenDocument="Robot_Cmd.c", FilePath="E:/BaiduSyncdisk/strong/daima/test_transplant_26_engineer_car/test_transplant_26_engineer_car/H7_Framework-master_1/User/App/2_Engineer/Command/Robot_Cmd.c", Line=0
+OpenDocument="All_Task.c", FilePath="E:/BaiduSyncdisk/strong/daima/test_transplant_26_engineer_car/test_transplant_26_engineer_car/H7_Framework-master_1/User/App/2_Engineer/All_Task/All_Task.c", Line=0
+OpenDocument="LeadScrew_Ctrl.h", FilePath="E:/BaiduSyncdisk/strong/daima/test_transplant_26_engineer_car/test_transplant_26_engineer_car/H7_Framework-master_1/User/App/2_Engineer/LeadScrew_Task/LeadScrew_Ctrl.h", Line=0
+OpenDocument="stm32h7xx_hal_dma.h", FilePath="E:/BaiduSyncdisk/strong/daima/test_transplant_26_engineer_car/test_transplant_26_engineer_car/H7_Framework-master_1/Drivers/STM32H7xx_HAL_Driver/Inc/stm32h7xx_hal_dma.h", Line=117
+OpenDocument="stm32h7xx_hal_tim.c", FilePath="E:/BaiduSyncdisk/strong/daima/test_transplant_26_engineer_car/test_transplant_26_engineer_car/H7_Framework-master_1/Drivers/STM32H7xx_HAL_Driver/Src/stm32h7xx_hal_tim.c", Line=3821
+OpenDocument="tasks.c", FilePath="E:/BaiduSyncdisk/strong/daima/test_transplant_26_engineer_car/test_transplant_26_engineer_car/H7_Framework-master_1/Middlewares/Third_Party/FreeRTOS/Source/tasks.c", Line=3625
+OpenDocument="usb_device.c", FilePath="E:/BaiduSyncdisk/strong/daima/test_transplant_26_engineer_car/test_transplant_26_engineer_car/H7_Framework-master_1/USB_DEVICE/App/usb_device.c", Line=27
+OpenDocument="main.c", FilePath="E:/BaiduSyncdisk/strong/daima/test_transplant_26_engineer_car/test_transplant_26_engineer_car/H7_Framework-master_1/Core/Src/main.c", Line=60
+OpenToolbar="Debug", Floating=0, x=0, y=0
+OpenWindow="Disassembly", DockArea=RIGHT, x=0, y=0, w=562, h=230, FilterBarShown=0, TotalValueBarShown=0, ToolBarShown=0
+OpenWindow="Memory 1", DockArea=BOTTOM, x=2, y=0, w=1225, h=328, FilterBarShown=0, TotalValueBarShown=0, ToolBarShown=0, EditorAddress=0x20004C92
+OpenWindow="Watched Data 1", DockArea=RIGHT, x=0, y=1, w=562, h=862, FilterBarShown=0, TotalValueBarShown=0, ToolBarShown=0
+OpenWindow="Functions", DockArea=LEFT, x=0, y=0, w=525, h=1093, FilterBarShown=0, TotalValueBarShown=0, ToolBarShown=0
+OpenWindow="Data Sampling", DockArea=BOTTOM, x=0, y=0, w=291, h=328, FilterBarShown=0, TotalValueBarShown=0, ToolBarShown=0, VisibleTab=0, UniformSampleSpacing=0
+OpenWindow="Console", DockArea=BOTTOM, x=1, y=0, w=1042, h=328, FilterBarShown=0, TotalValueBarShown=0, ToolBarShown=0
+SmartViewPlugin="", Page="", Toolbar="Hidden", Window="SmartView 1"
+TableHeader="Functions", SortCol="Name", SortOrder="ASCENDING", VisibleCols=["Name";"Address";"Size";"#Insts";"Source"], ColWidths=[1634;104;100;100;100]
+TableHeader="Data Sampling Table", SortCol="None", SortOrder="ASCENDING", VisibleCols=["Index";"Time"], ColWidths=[100;100]
+TableHeader="Data Sampling Setup", SortCol="Expression", SortOrder="ASCENDING", VisibleCols=["Expression";"Type";"Value";"Min";"Max";"Average";"# Changes";"Min. Change";"Max. Change"], ColWidths=[166;100;100;100;100;100;110;126;126]
+TableHeader="Power Sampling", SortCol="None", SortOrder="ASCENDING", VisibleCols=["Index";"Time";"Ch 0"], ColWidths=[100;100;100]
+TableHeader="Watched Data 1", SortCol="Expression", SortOrder="ASCENDING", VisibleCols=["Expression";"Value";"Location";"Refresh"], ColWidths=[158;100;104;200]
+TableHeader="RegisterSelectionDialog", SortCol="None", SortOrder="ASCENDING", VisibleCols=[], ColWidths=[]
+WatchedExpression="B2B_Remote_Debug", RefreshRate=5, Window=Watched Data 1
+WatchedExpression="B2B_Executor_Debug", RefreshRate=5, Window=Watched Data 1
+WatchedExpression="B2B_Executor_Debug", Window=Watched Data 1
+WatchedExpression="B2B_Executor_Debug", Window=Watched Data 1
+WatchedExpression="B2B_ExecutorB2B_Remote_Debug_Debug", Window=Watched Data 1
+WatchedExpression="B2B_Executor_Debug", Window=Watched Data 1
+WatchedExpression="B2B_ExecutorB2B_Remote_Debug_Debug", Window=Watched Data 1
+WatchedExpression="B2B_Executor_Debug", Window=Watched Data 1
+WatchedExpression="hdma_uart7_tx.State", RefreshRate=2, Window=Watched Data 1
+WatchedExpression="DBUS_RAW_SNAPSHOT[5]", RefreshRate=5, Window=Watched Data 1
+WatchedExpression="(DBUS_RAW_SNAPSHOT[5] >> 6) & 0x03", RefreshRate=5, Window=Watched Data 1
+WatchedExpression="(DBUS_RAW_SNAPSHOT[5] >> 4) & 0x03", RefreshRate=5, Window=Watched Data 1
+WatchedExpression="B2B_ExecutorB2B_Remote_Debug_Debug", Window=Watched Data 1
+WatchedExpression="B2B_Executor_Debug", Window=Watched Data 1
+WatchedExpression="B2B_ExecutorB2B_Remote_Debug_Debug", Window=Watched Data 1
+WatchedExpression="B2B_Executor_Debug", Window=Watched Data 1
+WatchedExpression="picture_motors", RefreshRate=5, Window=Watched Data 1
+WatchedExpression="B2B_ExecutorB2B_Remote_Debug_Debug", Window=Watched Data 1
+WatchedExpression="B2B_Executor_Debug", Window=Watched Data 1
+WatchedExpression="manual_leadscrew", RefreshRate=5, Window=Watched Data 1
+WatchedExpression="B2B_ExecutorB2B_Remote_Debug_Debug", Window=Watched Data 1
+WatchedExpression="B2B_Executor_Debug", Window=Watched Data 1
+WatchedExpression="manual_leadscrew", Window=Watched Data 1
+WatchedExpression="B2B_ExecutorB2B_Remote_Debug_Debug", Window=Watched Data 1
+WatchedExpression="B2B_Executor_Debug", Window=Watched Data 1
+WatchedExpression="B2B_ExecutorB2B_Remote_Debug_Debug", Window=Watched Data 1
+WatchedExpression="B2B_Executor_Debug", Window=Watched Data 1
+WatchedExpression="Engineer_LeadScrew_Debug", Window=Watched Data 1
+WatchedExpression="Engineer_LeadScrew_Debug.motor_online", Window=Watched Data 1
+WatchedExpression="B2B_ExecutorB2B_Remote_Debug_Debug", Window=Watched Data 1
+WatchedExpression="B2B_Executor_Debug", Window=Watched Data 1
+WatchedExpression="chassis_ctrl", RefreshRate=5, Window=Watched Data 1
+WatchedExpression="B2B_Chassis_Cmd.mode", RefreshRate=5, Window=Watched Data 1

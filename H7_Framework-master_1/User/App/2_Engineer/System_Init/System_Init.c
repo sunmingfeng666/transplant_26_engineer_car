@@ -15,6 +15,7 @@
 #include "Robot_Config.h"
 #include "System_Indicator.h"
 #include "Comm_DualBoard.h"
+#include "Engineer_Limit.h"
 
 uint32_t stm32_id[3];
 void Get_UID(uint32_t *uid) {
@@ -36,6 +37,8 @@ void System_Init() {
     Auto_UART_Router_Init();
     // 串口自动注册完成后，清空双板通信协议状态。
     DualBoard_Comm_Init();
+    // 微动开关由工程车 BSP 统一配置和防抖，避免控制任务直接操作裸 GPIO。
+    Engineer_Limit_Init();
     //WS2812初始化
     WS2812_Init();
     //蜂鸣器初始化

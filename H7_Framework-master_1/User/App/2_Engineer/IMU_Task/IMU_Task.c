@@ -124,6 +124,7 @@ void IMU_Update_Task(IMU_Data_t *IMU,float dt_s)
     switch (imu_ctrl_state)
     {
         case TEMP_INIT:
+            imu_ctrl_flag.fusion_enabled = 0U;
             IMU_Temp_Control_Init();
             vqf_init(&vqf_filter,0.001f);
             System_State_Report(ID_IMU,STATUS_INIT);
@@ -218,8 +219,9 @@ void IMU_Update_Task(IMU_Data_t *IMU,float dt_s)
             imu_ctrl_flag.fusion_enabled = 1;
             break;
         case ERROR_STATE:
+            imu_ctrl_flag.fusion_enabled = 0U;
             System_State_Report(ID_IMU,STATUS_ERROR);
-            if (BMI088_Init() == 1) // 尝试重新初始化IMU，成功则认为错误已恢复
+            if (BMI088_Init() == 0U) // BMI088_Init 返回 0 表示初始化成功
             {
                 imu_ctrl_state = TEMP_INIT; // 成功则回到初始状态
                 break;
