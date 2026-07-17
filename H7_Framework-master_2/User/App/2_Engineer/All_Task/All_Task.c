@@ -90,12 +90,23 @@ void Motor_Task(void *argument)
 
         // UART7 @100Hz：输出机械臂遥测帧。
         if (++vofa_divider >= 10U) {
+
+            VOFA_JustFloat(&huart7,18,
+                Arm_Control_Debug.target[0],Arm_Control_Debug.position[0],Arm_Control_Debug.position_error[0],
+                Arm_Control_Debug.target[1],Arm_Control_Debug.position[1],Arm_Control_Debug.position_error[1],
+                Arm_Control_Debug.target[2],Arm_Control_Debug.position[2],Arm_Control_Debug.position_error[2],
+                Arm_Control_Debug.target[3],Arm_Control_Debug.position[3],Arm_Control_Debug.position_error[3],
+                Arm_Control_Debug.target[4],Arm_Control_Debug.position[4],Arm_Control_Debug.position_error[4],
+                Arm_Control_Debug.target[5],Arm_Control_Debug.position[5],Arm_Control_Debug.position_error[5]);
+
             vofa_divider = 0U;
+
+/*
 #if ARM_MATLAB_DEBUG_ENABLE
             float link_online = (float)Arm_MatlabDebug_IsOnline();
 #else
-            float link_online = 0.0f;  /* 比赛固件无联调模块，恒 0 */
-#endif
+            float link_online = 0.0f;
+            #endif
             VOFA_JustFloat(&huart7, 20,
                 Arm_Control_Debug.position[0], Arm_Control_Debug.position[1],
                 Arm_Control_Debug.position[2], Arm_Control_Debug.position[3],
@@ -104,7 +115,7 @@ void Motor_Task(void *argument)
                 Arm_Control_Debug.velocity[1], Arm_Control_Debug.velocity[3], Arm_Control_Debug.velocity[4],
                 Arm_Control_Debug.gravity_tau[1], Arm_Control_Debug.gravity_tau[3], Arm_Control_Debug.gravity_tau[4],
                 Arm_Control_Debug.command_tau[1], Arm_Control_Debug.command_tau[3], Arm_Control_Debug.command_tau[4],
-                (float)Arm_Control_Debug.state, link_online);
+                (float)Arm_Control_Debug.state, link_online);*/
         }
     }
 }

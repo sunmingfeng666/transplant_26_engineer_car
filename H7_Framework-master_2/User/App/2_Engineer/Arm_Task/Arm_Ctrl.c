@@ -32,7 +32,9 @@ static const float ARM_HOME_POSE[ARM_JOINT_COUNT] = {
 };
 
 #define ARM_JOINT_SPEED           2.0f
-#define ARM_DBUS_STEP             0.00005f
+#define ARM_DBUS_STEP             0.000005f
+#define ARM_VT13_STEP             0.00005f
+#define ARM_DBUS_CLAMP_THRESHOLD  300
 #define ARM_VT13_BUTTON_RATE      0.35f
 #define ARM_RETRY_PERIOD_MS       100U
 #define ARM_TERMINAL_CLOSE_TORQUE 1.0f
@@ -141,6 +143,7 @@ static void Arm_ConfigureAxis(uint8_t axis, uint8_t requested_mode)
         Motor_Mode(bus, id, MIT_MODE, DM_CMD_RESET_MODE);
         s_active_mode[axis] = ARM_MODE_DISABLED;
         PID_Clear(&s_external_pid[axis]);
+        Arm_JointController_ResetCascade(axis);
         Arm_Control_Debug.ramp[axis] = 0.0f;
         return;
     }
@@ -154,6 +157,7 @@ static void Arm_ConfigureAxis(uint8_t axis, uint8_t requested_mode)
     Motor_Mode(bus, id, new_dm_mode, DM_CMD_MOTOR_MODE);
     s_active_mode[axis] = requested_mode;
     PID_Clear(&s_external_pid[axis]);
+    Arm_JointController_ResetCascade(axis);
     Arm_Control_Debug.ramp[axis] = (requested_mode == ARM_MODE_POSITION) ? 1.0f : 0.0f;
 }
 
@@ -230,32 +234,40 @@ static void Arm_UpdateRemoteTarget(const DBUS_Typedef *dbus,
     step_scale = Arm_Clamp(dt_s, 0.0f, 0.01f) / 0.001f;
 
     /* 老车 VT13 机械臂挡位：右摇杆 J1/J2，左摇杆 J3/J4，拨轮 J6，左右自定义键 J5。 */
-    if (vt13 != NULL && vt13->offline.is_online && vt13->Remote.mode_sw == 2U) {
-        s_target[ARM_AXIS_J1] -= (float)vt13->Remote.Channel[0] * ARM_DBUS_STEP * step_scale;
-        s_target[ARM_AXIS_J2] += (float)vt13->Remote.Channel[1] * ARM_DBUS_STEP * step_scale;
-        s_target[ARM_AXIS_J3] += (float)vt13->Remote.Channel[3] * ARM_DBUS_STEP * step_scale;
-        s_target[ARM_AXIS_J4] += (float)vt13->Remote.Channel[2] * ARM_DBUS_STEP * step_scale;
-        s_target[ARM_AXIS_J5] += ((float)vt13->Remote.fn_1 - (float)vt13->Remote.fn_2) *
-                                 ARM_VT13_BUTTON_RATE * dt_s;
-        s_target[ARM_AXIS_J6] += (float)vt13->Remote.wheel * ARM_DBUS_STEP * step_scale;
-        Arm_LimitTargets();
+    if (vt13 != NULL && vt13->offline.is_online) {
+        if (vt13->Remote.mode_sw == 2U) {
+            s_target[ARM_AXIS_J1] -= (float)vt13->Remote.Channel[0] * ARM_VT13_STEP * step_scale;
+            s_target[ARM_AXIS_J2] += (float)vt13->Remote.Channel[1] * ARM_VT13_STEP * step_scale;
+            s_target[ARM_AXIS_J3] += (float)vt13->Remote.Channel[3] * ARM_VT13_STEP * step_scale;
+            s_target[ARM_AXIS_J4] += (float)vt13->Remote.Channel[2] * ARM_VT13_STEP * step_scale;
+            s_target[ARM_AXIS_J5] += ((float)vt13->Remote.fn_1 - (float)vt13->Remote.fn_2) *
+                                     ARM_VT13_BUTTON_RATE * dt_s;
+            s_target[ARM_AXIS_J6] += (float)vt13->Remote.wheel * ARM_VT13_STEP * step_scale;
+            Arm_LimitTargets();
+        }
+        /* 与 Robot_Cmd 保持一致：VT13 在线时完全屏蔽 DBUS，避免双遥控源叠加。 */
         return;
     }
 
     if (dbus == NULL || !dbus->offline.is_online) return;
 
-    if (dbus->Remote.S1 == 1U) {
+    /* DBUS 挡位解耦：只有 S1=2 才允许机械臂读取摇杆。 */
+    if (dbus->Remote.S1 != 2U) return;
+
+    if (dbus->Remote.S2 == 1U) {
         s_target[ARM_AXIS_J1] -= (float)dbus->Remote.CH0 * ARM_DBUS_STEP * step_scale;
         s_target[ARM_AXIS_J2] += (float)dbus->Remote.CH1 * ARM_DBUS_STEP * step_scale;
         s_target[ARM_AXIS_J3] += (float)dbus->Remote.CH2 * ARM_DBUS_STEP * step_scale;
         s_target[ARM_AXIS_J4] += (float)dbus->Remote.CH3 * ARM_DBUS_STEP * step_scale;
-    } else if (dbus->Remote.S1 == 2U) {
+    } else if (dbus->Remote.S2 == 2U) {
         s_target[ARM_AXIS_J5] += (float)dbus->Remote.CH0 * ARM_DBUS_STEP * step_scale;
         s_target[ARM_AXIS_J6] += (float)dbus->Remote.CH1 * ARM_DBUS_STEP * step_scale;
+        if (dbus->Remote.CH2 > ARM_DBUS_CLAMP_THRESHOLD) {
+            s_clamp_close = 1U;
+        } else if (dbus->Remote.CH2 < -ARM_DBUS_CLAMP_THRESHOLD) {
+            s_clamp_close = 0U;
+        }
     }
-
-    if (dbus->Remote.S2 == 1U) s_clamp_close = 1U;
-    else if (dbus->Remote.S2 == 2U) s_clamp_close = 0U;
     Arm_LimitTargets();
 #endif
 }
@@ -270,6 +282,7 @@ uint8_t Engineer_Arm_Init(void)
     for (uint8_t axis = 0U; axis < ARM_JOINT_COUNT; axis++) {
         s_active_mode[axis] = ARM_MODE_UNKNOWN;
         Arm_InitExternalPid(axis);
+        Arm_JointController_ResetCascade(axis);
     }
     s_target_valid_mask = 0U;
     s_terminal_prev_online = 0U;
@@ -316,6 +329,7 @@ void Engineer_Arm_Task(const Arm_Motor_Group_t *feedback,
             fault_mask |= (uint16_t)(1U << axis);
             s_prev_online[axis] = 0U;
             PID_Clear(&s_external_pid[axis]);
+            Arm_JointController_ResetCascade(axis);
             if (retry_due) {
                 Arm_ConfigureAxis(axis, requested_mode);
             }
@@ -383,8 +397,14 @@ void Engineer_Arm_Task(const Arm_Motor_Group_t *feedback,
         float command_tau = 0.0f;
 
         Arm_Control_Debug.target[axis] = s_target[axis];
+        Arm_Control_Debug.position_error[axis] =
+            ((online_mask & (1U << axis)) != 0U) ? (s_target[axis] - motor->pos) : 0.0f;
+        Arm_Control_Debug.cascade_target_velocity[axis] = 0.0f;
+        Arm_Control_Debug.cascade_velocity_error[axis] = 0.0f;
+        Arm_Control_Debug.cascade_integral_tau[axis] = 0.0f;
         if (mode == ARM_MODE_DISABLED) {
             PID_Clear(&s_external_pid[axis]);
+            Arm_JointController_ResetCascade(axis);
             Arm_Control_Debug.gravity_tau[axis] = 0.0f;
             Arm_Control_Debug.impedance_tau[axis] = 0.0f;
             Arm_Control_Debug.command_tau[axis] = 0.0f;
@@ -392,6 +412,7 @@ void Engineer_Arm_Task(const Arm_Motor_Group_t *feedback,
         }
 
         if ((online_mask & (1U << axis)) == 0U || mode == ARM_MODE_UNKNOWN) {
+            Arm_JointController_ResetCascade(axis);
             Arm_Control_Debug.gravity_tau[axis] = 0.0f;
             Arm_Control_Debug.impedance_tau[axis] = 0.0f;
             Arm_Control_Debug.command_tau[axis] = 0.0f;
@@ -400,10 +421,12 @@ void Engineer_Arm_Task(const Arm_Motor_Group_t *feedback,
 
         if (mode == ARM_MODE_POSITION) {
             PID_Clear(&s_external_pid[axis]);
+            Arm_JointController_ResetCascade(axis);
             Pos_Speed_Ctrl(Arm_GetBus(axis), Arm_GetMotorId(axis), s_target[axis], ARM_JOINT_SPEED);
         } else {
             float ramp_time = Arm_Clamp(Arm_Control_Config.ramp_time_s, 0.1f, 5.0f);
-            uint8_t saturated = 0U;
+            uint8_t controller_saturated = 0U;
+            uint8_t output_saturated = 0U;
 
             if (ramp_time < 0.1f) ramp_time = 0.1f;
             any_active = 1U;
@@ -423,15 +446,30 @@ void Engineer_Arm_Task(const Arm_Motor_Group_t *feedback,
             case ARM_MODE_MIT:
                 impedance_tau = Arm_CalcExternalPidTorque(axis, s_target[axis], motor->pos);
                 break;
+            case ARM_MODE_CASCADE: {
+                const Arm_Cascade_Output_t cascade =
+                    Arm_JointController_Cascade(axis, s_target[axis],
+                                                motor->pos, motor->vel, dt_s);
+                PID_Clear(&s_external_pid[axis]);
+                impedance_tau = cascade.torque;
+                Arm_Control_Debug.cascade_target_velocity[axis] = cascade.target_velocity;
+                Arm_Control_Debug.cascade_velocity_error[axis] = cascade.velocity_error;
+                Arm_Control_Debug.cascade_integral_tau[axis] = cascade.integral_tau;
+                if (cascade.saturated) controller_saturated = 1U;
+                break;
+            }
             default:
                 PID_Clear(&s_external_pid[axis]);
+                Arm_JointController_ResetCascade(axis);
                 break;
             }
             command_tau = (gravity_tau + impedance_tau) * Arm_Control_Debug.ramp[axis];
-            command_tau = Arm_JointController_LimitTorque(axis, command_tau, &saturated);
+            command_tau = Arm_JointController_LimitTorque(axis, command_tau, &output_saturated);
             MIT_Ctrl(Arm_GetBus(axis), Arm_GetMotorId(axis),
                      s_target[axis], 0.0f, 0.0f, 0.0f, command_tau);
-            if (saturated) saturation_mask |= (uint16_t)(1U << axis);
+            if (controller_saturated || output_saturated) {
+                saturation_mask |= (uint16_t)(1U << axis);
+            }
         }
 
         Arm_Control_Debug.gravity_tau[axis] = gravity_tau;

@@ -44,16 +44,15 @@ OFFLINE_NODE(&chassis_motors.DJI_3508_Chassis[3].offline, MOTOR_OFFLINE_TIME, CH
 CAN_RX_NODE(FDCAN1, POWER_METER_CAN_ID, &power_meter, Power_Meter_Rx);
 OFFLINE_NODE(&power_meter.offline, POWER_METER_OFFLINE_TIME, GROUP_NONE);
 
-CAN_RX_NODE(FDCAN3, 0x204, &picture_motors.DJI_2006_Lift, DJI_Motor_Resolve);
+// 沿用老车 CAN3 接线：ID3=图传抬升、ID4=登岛丝杠、ID5=图传横移。
+CAN_RX_NODE(FDCAN3, 0x203, &picture_motors.DJI_2006_Lift, DJI_Motor_Resolve);
 OFFLINE_NODE(&picture_motors.DJI_2006_Lift.offline, MOTOR_OFFLINE_TIME, GROUP_NONE);
 CAN_RX_NODE(FDCAN3, 0x205, &picture_motors.DJI_2006_Transverse, DJI_Motor_Resolve);
 OFFLINE_NODE(&picture_motors.DJI_2006_Transverse.offline, MOTOR_OFFLINE_TIME, GROUP_NONE);
 
-// 登岛丝杠 DJI 3508：与图传同在 CAN3，共用 0x200 电流帧。
-// 反馈 ID 待用户核实电调实际拨码后确认；老代码为 0x204(与新板图传抬升冲突)，
-// 这里暂用 CAN3 空闲的 0x201(对应电调 ID=1，0x200 帧第 1 槽 n1)。查到后改此处 + LeadScrew_Ctrl.c 的 LEADSCREW_TX_SLOT。
+// 登岛丝杠 DJI 3508：电调 ID=4，反馈 0x204，使用 0x200 电流帧第 4 槽 n4。
 #ifndef LEADSCREW_RX_ID
-#define LEADSCREW_RX_ID 0x201
+#define LEADSCREW_RX_ID 0x204
 #endif
 CAN_RX_NODE(FDCAN3, LEADSCREW_RX_ID, &picture_motors.DJI_3508_LeadScrew, DJI_Motor_Resolve);
 OFFLINE_NODE(&picture_motors.DJI_3508_LeadScrew.offline, MOTOR_OFFLINE_TIME, GROUP_NONE);

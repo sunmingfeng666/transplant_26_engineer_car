@@ -317,8 +317,6 @@ void AfterProjectLoad (void) {
   Window.Add("Watched Data 1", "Arm_Control_Config");
 }
 
-}
-
 /*********************************************************************
 *
 *       OnDebugStartBreakSymbolReached

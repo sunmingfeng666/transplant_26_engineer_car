@@ -13,6 +13,7 @@
 #define LEADSCREW_PID_I_LIMIT 2000.0f
 #define LEADSCREW_HOME_SPEED 4000.0f
 #define LEADSCREW_HOME_MAX_CURRENT 6000.0f
+#define LEADSCREW_DIRECT_SPEED_LIMIT 2000.0f
 #define LEADSCREW_HOME_TIMEOUT_MS 12000U
 #define LEADSCREW_POSITION_TOLERANCE 3000
 #define LEADSCREW_SPEED_DONE_TOLERANCE 100
@@ -36,6 +37,8 @@ typedef struct {
 } Engineer_LeadScrew_Ctrl_t;
 
 static Engineer_LeadScrew_Ctrl_t ls_ctrl = {0};
+static uint8_t s_direct_active = 0U;
+volatile Engineer_LeadScrew_Debug_t Engineer_LeadScrew_Debug = {0};
 
 static int32_t LeadScrew_Limit_Int32(int32_t v, int32_t lo, int32_t hi)
 {
@@ -96,6 +99,23 @@ static int16_t LeadScrew_Home_Calc(const DJI_MOTOR_DATA_Typedef *motor, float ta
     return (int16_t)(current * LEADSCREW_DIR);
 }
 
+static void LeadScrew_Update_Debug(const DJI_MOTOR_DATA_Typedef *motor)
+{
+    Engineer_LeadScrew_Debug.up_limit = Engineer_Limit_LeadScrew_Up();
+    Engineer_LeadScrew_Debug.down_limit = Engineer_Limit_LeadScrew_Down();
+    Engineer_LeadScrew_Debug.output = ls_ctrl.output;
+
+    if (motor != NULL) {
+        Engineer_LeadScrew_Debug.motor_online = motor->offline.is_online ? 1U : 0U;
+        Engineer_LeadScrew_Debug.encoder = motor->Angle_Infinite;
+        Engineer_LeadScrew_Debug.speed = motor->Speed_now;
+    } else {
+        Engineer_LeadScrew_Debug.motor_online = 0U;
+        Engineer_LeadScrew_Debug.encoder = 0;
+        Engineer_LeadScrew_Debug.speed = 0;
+    }
+}
+
 uint8_t Engineer_LeadScrew_Init(void)
 {
     float pos_pid_param[3] = {0.12f, 0.00002f, 0.0001f};
@@ -140,6 +160,47 @@ void Engineer_LeadScrew_Task(const Picture_Motor_Group_t *p_motor)
         (void)Engineer_LeadScrew_Init();
     }
 
+    const DJI_MOTOR_DATA_Typedef *motor =
+        (p_motor != NULL) ? &p_motor->DJI_3508_LeadScrew : NULL;
+
+    /* Direct debug speed control bypasses the normal state machine. */
+    if (Engineer_LeadScrew_Debug.direct_enable != 0U) {
+        s_direct_active = 1U;
+        if (motor == NULL || !motor->offline.is_online) {
+            Engineer_LeadScrew_Debug.direct_speed = 0.0f;
+            LeadScrew_Clear_Output();
+            LeadScrew_Update_Debug(motor);
+            return;
+        }
+
+        LeadScrew_Update_Switch_Zero(motor);
+        float target_speed = LeadScrew_Limit_Float(
+            Engineer_LeadScrew_Debug.direct_speed,
+            -LEADSCREW_DIRECT_SPEED_LIMIT,
+            LEADSCREW_DIRECT_SPEED_LIMIT);
+        int16_t out = LeadScrew_Home_Calc(motor, target_speed);
+
+        if (Engineer_Limit_LeadScrew_Down() && out < 0) {
+            out = 0;
+            PID_Clear(&ls_ctrl.speed_pid);
+        }
+        if (Engineer_Limit_LeadScrew_Up() && out > 0) {
+            out = 0;
+            PID_Clear(&ls_ctrl.speed_pid);
+        }
+
+        ls_ctrl.output = out;
+        LeadScrew_Update_Debug(motor);
+        return;
+    }
+
+    if (s_direct_active != 0U) {
+        s_direct_active = 0U;
+        ls_ctrl.captured = 0U;
+        ls_ctrl.state = ENGINEER_LEADSCREW_WAIT_FEEDBACK;
+        LeadScrew_Clear_Output();
+    }
+
     // 前置1：对端失联/安全/急停 -> 停机安全输出。
     if (p_motor == NULL ||
         !DualBoard_Picture_Is_Online() ||
@@ -158,8 +219,6 @@ void Engineer_LeadScrew_Task(const Picture_Motor_Group_t *p_motor)
         ls_ctrl.homing_done = 0U;
         ls_ctrl.state = ENGINEER_LEADSCREW_WAIT_FEEDBACK;
     }
-
-    const DJI_MOTOR_DATA_Typedef *motor = &p_motor->DJI_3508_LeadScrew;
 
     // 前置2：电机离线 -> 清捕获、回等待、安全输出。
     if (!motor->offline.is_online) {

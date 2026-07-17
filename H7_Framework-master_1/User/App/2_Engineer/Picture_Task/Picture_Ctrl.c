@@ -4,7 +4,7 @@
 #include "DJI_Motor.h"
 #include "fdcan.h"
 #include "Engineer_Limit.h"
-#include "LeadScrew_Ctrl.h"  // 丝杠与图传共用 CAN3 0x200 帧，发送时带上其电流(槽 n1=ID 0x201)
+#include "LeadScrew_Ctrl.h"  // 丝杠与图传升降共用 CAN3 0x200 帧，丝杠位于 n4(ID 0x204)
 
 #define PICTURE_LIFT_MIN 0
 #define PICTURE_LIFT_MAX 1025000
@@ -235,8 +235,9 @@ void Engineer_Picture_Task(const Picture_Motor_Group_t *p_motor)
         PID_Clear(&picture_ctrl.speed_pid[PICTURE_AXIS_TRANSVERSE]);
     }
 
-    // n1=丝杠(ID 0x201)、n3/n4=图传抬升/横移。丝杠电流由其独立状态机算好，此处只搭车发送。
-    DJI_Motor_Send(&hfdcan3, 0x200, Engineer_LeadScrew_Get_Output(), 0, lift_out, transverse_out);
+    // 0x200：n3=图传抬升(ID3)，n4=丝杠(ID4)；0x1FF：n1=图传横移(ID5)。
+    DJI_Motor_Send(&hfdcan3, 0x200, 0, 0, lift_out, Engineer_LeadScrew_Get_Output());
+    DJI_Motor_Send(&hfdcan3, 0x1FF, transverse_out, 0, 0, 0);
 }
 
 static void Picture_Clear_Output(void)
@@ -245,8 +246,9 @@ static void Picture_Clear_Output(void)
         PID_Clear(&picture_ctrl.pos_pid[i]);
         PID_Clear(&picture_ctrl.speed_pid[i]);
     }
-    // 图传停机时丝杠可能仍在工作：帧里保留丝杠电流，只清零图传两槽。
-    DJI_Motor_Send(&hfdcan3, 0x200, Engineer_LeadScrew_Get_Output(), 0, 0, 0);
+    // 图传停机时丝杠可能仍在工作：n4 保留丝杠电流，并清零图传升降、横移。
+    DJI_Motor_Send(&hfdcan3, 0x200, 0, 0, 0, Engineer_LeadScrew_Get_Output());
+    DJI_Motor_Send(&hfdcan3, 0x1FF, 0, 0, 0, 0);
 }
 
 static int16_t Picture_Home_Axis_Calc(Picture_Axis_e axis,

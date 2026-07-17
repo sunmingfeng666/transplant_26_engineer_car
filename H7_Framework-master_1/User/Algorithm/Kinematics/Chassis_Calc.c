@@ -63,9 +63,9 @@ void MecanumResolve(float *wheel_rpm, float vx_temp, float vy_temp, float vr, me
     // 轮序和符号沿用旧工程车底盘代码。
     // 如果实车方向反了，优先调整这里，不改串口协议。
     wheel_rpm[0] = ( vx_temp + vy_temp + rot) * mecanumInit_t->wheel_rpm_ratio;
-    wheel_rpm[1] = (-vx_temp + vy_temp + rot) * mecanumInit_t->wheel_rpm_ratio;
+    wheel_rpm[1] = -(-vx_temp + vy_temp - rot) * mecanumInit_t->wheel_rpm_ratio;
     wheel_rpm[2] = (-vx_temp - vy_temp + rot) * mecanumInit_t->wheel_rpm_ratio;
-    wheel_rpm[3] = ( vx_temp - vy_temp + rot) * mecanumInit_t->wheel_rpm_ratio;
+    wheel_rpm[3] = -( vx_temp - vy_temp + rot) * mecanumInit_t->wheel_rpm_ratio;
 
     // 保持运动方向不变，把四个轮子的目标转速整体压到上限内。
     float max_abs = 0.0f;

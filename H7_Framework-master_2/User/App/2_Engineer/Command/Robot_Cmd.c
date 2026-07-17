@@ -93,7 +93,7 @@ static DualBoard_Mechanism_Action_e manual_mech_action = DUALBOARD_ACTION_HOLD;
 static uint8_t manual_store_slot = 3U;                // 初值3，首次 Ctrl+E 自增后从槽0开始循环
 static uint8_t last_home_key;                         // Ctrl+Q 归零边沿
 static uint8_t last_store_key;                        // Ctrl+E 存矿边沿
-static uint8_t last_s2_up;                             // 纯摇杆模式 S2 上拨边沿
+static uint8_t last_mech_s2;                           // S1=3 机构模式的上周期 S2 挡位
 static uint8_t last_vt_home_trigger;                   // VT13 挡位1扳机归零边沿
 
 void Robot_Cmd_Init(void)
@@ -116,7 +116,7 @@ void Robot_Cmd_Init(void)
     manual_store_slot = 3U;
     last_home_key = 0U;
     last_store_key = 0U;
-    last_s2_up = 0U;
+    last_mech_s2 = 0U;
     last_vt_home_trigger = 0U;
 }
 
@@ -192,6 +192,7 @@ static void Cmd_Handle_Safe_Mode(void)
     picture_cmd.enable = 0U;
     mechanism_test_active = 0U;
     manual_mech_action = DUALBOARD_ACTION_HOLD;
+    last_mech_s2 = 0U;
 }
 
 // 取通信层交付的原始反馈帧并映射到 B2B_Engineer_Feedback（原 Comm 层 Parse_Engineer_Feedback_Frame 逻辑）。
@@ -270,6 +271,7 @@ static void Cmd_Update_Remote_Ctrl(void)
     if (vt13_data.offline.is_online) {
         mechanism_test_active = 0U;
         manual_mech_action = DUALBOARD_ACTION_HOLD;
+        last_mech_s2 = 0U;
 
         if (vt13_data.Remote.mode_sw == 0U) {
             chassis_cmd.target_vx = (float)vt13_data.Remote.Channel[1] * RC_ROCKER_XY_COEF;
@@ -321,9 +323,21 @@ static void Cmd_Update_Remote_Ctrl(void)
         return;
     }
 
-    // 纯 DBUS 测试：S1 选子系统。1(上)=底盘，3(中)=图传，2(下)=存矿。
-    if (dbus_data.Remote.S1 == 3U || dbus_data.Remote.S1 == 2U) {
-        // 图传/存矿模式：底盘冻结(FREE+零速，不触发 board1 STOP_ALL)。
+    // 纯 DBUS：S1=1 底盘，S1=2 机械臂，S1=3 图传/丝杠/存矿机构。
+    if (dbus_data.Remote.S1 == 2U) {
+        // 机械臂模式由 Arm_Ctrl 独占摇杆；底盘与板1机构保持静止。
+        chassis_cmd.mode = CHASSIS_CMD_FREE;
+        chassis_cmd.target_vx = 0.0f;
+        chassis_cmd.target_vy = 0.0f;
+        chassis_cmd.target_vw = 0.0f;
+        mechanism_test_active = 0U;
+        manual_mech_action = DUALBOARD_ACTION_HOLD;
+        last_mech_s2 = 0U;
+        return;
+    }
+
+    if (dbus_data.Remote.S1 == 3U) {
+        // 机构模式：底盘冻结(FREE+零速，不触发 board1 STOP_ALL)。
         chassis_cmd.mode = CHASSIS_CMD_FREE;
         chassis_cmd.target_vx = 0.0f;
         chassis_cmd.target_vy = 0.0f;
@@ -335,6 +349,7 @@ static void Cmd_Update_Remote_Ctrl(void)
     // S1=1(上)：底盘模式。
     mechanism_test_active = 0U;
     manual_mech_action = DUALBOARD_ACTION_HOLD;
+    last_mech_s2 = 0U;
     chassis_cmd.target_vx = (float)dbus_data.Remote.CH1 * RC_ROCKER_XY_COEF +
                             (float)vt13_data.Remote.Channel[1] * RC_ROCKER_XY_COEF;
     chassis_cmd.target_vy = (float)dbus_data.Remote.CH0 * RC_ROCKER_XY_COEF +
@@ -434,34 +449,38 @@ static int32_t Stick_Delta(int16_t ch, int32_t step)
     return v * step / RC_STICK_RANGE;
 }
 
-// 纯 DBUS 摇杆测机构(不走键盘/一键)：
-//  S1=中(3) 图传：左摇杆上下→升降，左摇杆左右→横移，S2上拨→归零。
-//  S1=下(2) 存矿：拨轮选槽 0~3，S2上拨→执行存矿到该槽。
+// 纯 DBUS 机构模式(S1=3)：
+//  S2中(3)：左摇杆上下/左右调图传升降和横移；
+//  S2上(1)：边沿触发图传+丝杠归零；S2下(2)：边沿触发存矿，拨轮选择槽位0~3。
 static void Cmd_Update_Stick_Mechanism(void)
 {
-    uint8_t s2_up = (dbus_data.Remote.S2 == 1U) ? 1U : 0U;  // S2 上=1
-    uint8_t s2_rising = (s2_up && !last_s2_up) ? 1U : 0U;
+    const uint8_t s2 = dbus_data.Remote.S2;
+    /* 0 是刚进入机构模式的未武装哨兵，避免带着上/下挡进入时立即误触发动作。 */
+    const uint8_t s2_changed =
+        (last_mech_s2 != 0U && s2 != last_mech_s2) ? 1U : 0U;
+    int32_t slot = (dbus_data.Remote.Dial + 660) * 4 / 1320;
 
     mechanism_test_active = 1U;
+    manual_mech_action = DUALBOARD_ACTION_HOLD;
 
-    if (dbus_data.Remote.S1 == 3U) {
+    if (slot < 0) slot = 0;
+    if (slot > 3) slot = 3;
+    manual_store_slot = (uint8_t)slot;
+
+    if (s2 == 3U) {
         // 图传：CH2=左摇杆上下(升降)，CH3=左摇杆左右(横移)。
         picture_cmd.lift = Cmd_Limit_Int32(picture_cmd.lift + Stick_Delta(dbus_data.Remote.CH2, PICTURE_LIFT_STEP),
                                            PICTURE_LIFT_MIN, PICTURE_LIFT_MAX);
         picture_cmd.transverse = Cmd_Limit_Int32(picture_cmd.transverse - Stick_Delta(dbus_data.Remote.CH3, PICTURE_TRANSVERSE_STEP),
                                                  PICTURE_TRANSVERSE_MIN, PICTURE_TRANSVERSE_MAX);
-        if (s2_rising) { manual_mech_action = DUALBOARD_ACTION_HOME_PICTURE; mechanism_action_seq++; }
-        else if (!s2_up) manual_mech_action = DUALBOARD_ACTION_HOLD;
-    } else {
-        // 存矿：拨轮 -660~660 映射槽位 0~3。
-        int32_t slot = (dbus_data.Remote.Dial + 660) * 4 / 1320;
-        if (slot < 0) slot = 0;
-        if (slot > 3) slot = 3;
-        manual_store_slot = (uint8_t)slot;
-        if (s2_rising) { manual_mech_action = DUALBOARD_ACTION_EXECUTE; mechanism_action_seq++; }
-        else if (!s2_up) manual_mech_action = DUALBOARD_ACTION_HOLD;
+    } else if (s2 == 1U && s2_changed) {
+        manual_mech_action = DUALBOARD_ACTION_HOME_PICTURE;
+        mechanism_action_seq++;
+    } else if (s2 == 2U && s2_changed) {
+        manual_mech_action = DUALBOARD_ACTION_EXECUTE;
+        mechanism_action_seq++;
     }
-    last_s2_up = s2_up;
+    last_mech_s2 = s2;
 }
 
 static void Cmd_Update_Chassis_Debug(void)
@@ -541,17 +560,17 @@ static void Cmd_DualBoard_Sync(void)
 
     uint8_t send_result = DualBoard_Send_Remote(&huart10, dbus_raw, vt13_raw,
                                                  remote_online_bits, &auxiliary);
-    B2B_Board2_Debug_t debug_snapshot = {
-        .last_update_ms = HAL_GetTick(),
-        .remote_online_bits = remote_online_bits,
-        .last_send_result = send_result,
-        .dbus = dbus_data,
-        .vt13 = vt13_data,
-        .chassis_cmd = chassis_cmd,
-        .picture_cmd = picture_cmd,
-        .auxiliary = auxiliary,
-        .board1_feedback = B2B_Engineer_Feedback,
-    };
+    /* 调试快照体积较大，放入静态存储区，避免占用 Command 任务栈。 */
+    static B2B_Board2_Debug_t debug_snapshot = {0};
+    debug_snapshot.last_update_ms = HAL_GetTick();
+    debug_snapshot.remote_online_bits = remote_online_bits;
+    debug_snapshot.last_send_result = send_result;
+    debug_snapshot.dbus = dbus_data;
+    debug_snapshot.vt13 = vt13_data;
+    debug_snapshot.chassis_cmd = chassis_cmd;
+    debug_snapshot.picture_cmd = picture_cmd;
+    debug_snapshot.auxiliary = auxiliary;
+    debug_snapshot.board1_feedback = B2B_Engineer_Feedback;
     B2B_Board2_Debug = debug_snapshot;
 }
 

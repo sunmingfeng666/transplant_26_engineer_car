@@ -1,13 +1,78 @@
 
+
+OpenDocument="main.c", FilePath="E:/BaiduSyncdisk/strong/daima/test_transplant_26_engineer_car/test_transplant_26_engineer_car/H7_Framework-master_2/Core/Src/main.c", Line=60
+OpenDocument="Classic_Control.c", FilePath="E:/BaiduSyncdisk/strong/daima/test_transplant_26_engineer_car/test_transplant_26_engineer_car/H7_Framework-master_2/User/Algorithm/Control/Classic_Control.c", Line=204
+OpenDocument="DM_Motor.c", FilePath="E:/BaiduSyncdisk/strong/daima/test_transplant_26_engineer_car/test_transplant_26_engineer_car/H7_Framework-master_2/User/Device/Motor/DM_Motor.c", Line=0
+OpenDocument="stm32h7xx_hal_spi.c", FilePath="E:/BaiduSyncdisk/strong/daima/test_transplant_26_engineer_car/test_transplant_26_engineer_car/H7_Framework-master_2/Drivers/STM32H7xx_HAL_Driver/Src/stm32h7xx_hal_spi.c", Line=1217
+OpenDocument="startup_stm32h723xx.s", FilePath="E:/BaiduSyncdisk/strong/daima/test_transplant_26_engineer_car/test_transplant_26_engineer_car/H7_Framework-master_2/startup_stm32h723xx.s", Line=34
+OpenDocument="stm32h7xx_it.c", FilePath="E:/BaiduSyncdisk/strong/daima/test_transplant_26_engineer_car/test_transplant_26_engineer_car/H7_Framework-master_2/Core/Src/stm32h7xx_it.c", Line=77
+OpenDocument="tasks.c", FilePath="E:/BaiduSyncdisk/strong/daima/test_transplant_26_engineer_car/test_transplant_26_engineer_car/H7_Framework-master_2/Middlewares/Third_Party/FreeRTOS/Source/tasks.c", Line=3621
+OpenDocument="Arm_JointController.h", FilePath="E:/BaiduSyncdisk/strong/daima/test_transplant_26_engineer_car/test_transplant_26_engineer_car/H7_Framework-master_2/User/App/2_Engineer/Arm_Task/Arm_JointController.h", Line=0
+OpenDocument="BSP_DWT.c", FilePath="E:/BaiduSyncdisk/strong/daima/test_transplant_26_engineer_car/test_transplant_26_engineer_car/H7_Framework-master_2/User/BSP/DWT/BSP_DWT.c", Line=48
+OpenDocument="stm32h7xx_hal_rcc.c", FilePath="E:/BaiduSyncdisk/strong/daima/test_transplant_26_engineer_car/test_transplant_26_engineer_car/H7_Framework-master_2/Drivers/STM32H7xx_HAL_Driver/Src/stm32h7xx_hal_rcc.c", Line=431
 OpenToolbar="Debug", Floating=0, x=0, y=0
-OpenWindow="Registers 1", DockArea=RIGHT, x=0, y=1, w=506, h=561, FilterBarShown=0, TotalValueBarShown=0, ToolBarShown=0, FilteredItems=[], RefreshRate=1
-OpenWindow="Memory 1", DockArea=BOTTOM, x=1, y=0, w=1392, h=328, FilterBarShown=0, TotalValueBarShown=0, ToolBarShown=0, EditorAddress=0x200051A2
-OpenWindow="Watched Data 1", DockArea=RIGHT, x=0, y=0, w=506, h=531, TabPos=0, TopOfStack=1, FilterBarShown=0, TotalValueBarShown=0, ToolBarShown=0
-OpenWindow="Functions", DockArea=LEFT, x=0, y=0, w=416, h=1093, FilterBarShown=0, TotalValueBarShown=0, ToolBarShown=0
-OpenWindow="Console", DockArea=BOTTOM, x=0, y=0, w=1167, h=328, FilterBarShown=0, TotalValueBarShown=0, ToolBarShown=0
+OpenWindow="Registers 1", DockArea=RIGHT, x=0, y=2, w=506, h=170, FilterBarShown=0, TotalValueBarShown=0, ToolBarShown=0, FilteredItems=[], RefreshRate=1
+OpenWindow="Disassembly", DockArea=RIGHT, x=0, y=1, w=506, h=125, FilterBarShown=0, TotalValueBarShown=0, ToolBarShown=0
+OpenWindow="Memory 1", DockArea=BOTTOM, x=1, y=0, w=1410, h=303, FilterBarShown=0, TotalValueBarShown=0, ToolBarShown=0, EditorAddress=0x20005292
+OpenWindow="Watched Data 1", DockArea=RIGHT, x=0, y=0, w=506, h=821, FilterBarShown=0, TotalValueBarShown=0, ToolBarShown=0
+OpenWindow="Functions", DockArea=LEFT, x=0, y=0, w=416, h=125, FilterBarShown=0, TotalValueBarShown=0, ToolBarShown=0
+OpenWindow="Console", DockArea=BOTTOM, x=0, y=0, w=1149, h=303, FilterBarShown=0, TotalValueBarShown=0, ToolBarShown=0
+OpenWindow="Watched Data 2", DockArea=LEFT, x=0, y=1, w=416, h=84, FilterBarShown=0, TotalValueBarShown=0, ToolBarShown=0
+OpenWindow="Watched Data 3", DockArea=LEFT, x=0, y=2, w=416, h=83, FilterBarShown=0, TotalValueBarShown=0, ToolBarShown=0
+OpenWindow="Watched Data 4", DockArea=LEFT, x=0, y=3, w=416, h=83, FilterBarShown=0, TotalValueBarShown=0, ToolBarShown=0
+OpenWindow="Watched Data 5", DockArea=LEFT, x=0, y=4, w=416, h=83, FilterBarShown=0, TotalValueBarShown=0, ToolBarShown=0
+OpenWindow="Watched Data 6", DockArea=LEFT, x=0, y=5, w=416, h=85, FilterBarShown=0, TotalValueBarShown=0, ToolBarShown=0
+OpenWindow="Watched Data 7", DockArea=LEFT, x=0, y=6, w=416, h=83, FilterBarShown=0, TotalValueBarShown=0, ToolBarShown=0
+OpenWindow="Watched Data 8", DockArea=LEFT, x=0, y=7, w=416, h=83, FilterBarShown=0, TotalValueBarShown=0, ToolBarShown=0
+OpenWindow="Watched Data 9", DockArea=LEFT, x=0, y=8, w=416, h=84, FilterBarShown=0, TotalValueBarShown=0, ToolBarShown=0
+OpenWindow="Watched Data 10", DockArea=LEFT, x=0, y=9, w=416, h=84, FilterBarShown=0, TotalValueBarShown=0, ToolBarShown=0
+OpenWindow="Watched Data 11", DockArea=LEFT, x=0, y=10, w=416, h=231, FilterBarShown=0, TotalValueBarShown=0, ToolBarShown=0
 SmartViewPlugin="", Page="", Toolbar="Hidden", Window="SmartView 1"
-TableHeader="Functions", SortCol="Name", SortOrder="ASCENDING", VisibleCols=["Name";"Address";"Size";"#Insts";"Source"], ColWidths=[1634;104;100;100;100]
+TableHeader="Functions", SortCol="Name", SortOrder="ASCENDING", VisibleCols=["Name";"Address";"Size";"#Insts";"Source"], ColWidths=[1634;104;100;100;286]
 TableHeader="Power Sampling", SortCol="None", SortOrder="ASCENDING", VisibleCols=["Index";"Time";"Ch 0"], ColWidths=[100;100;100]
-TableHeader="Registers 1", SortCol="Name", SortOrder="ASCENDING", VisibleCols=["Name";"Value";"Description"], ColWidths=[100;144;106]
-TableHeader="Watched Data 1", SortCol="Expression", SortOrder="ASCENDING", VisibleCols=["Expression";"Value";"Location";"Refresh"], ColWidths=[158;100;104;144]
+TableHeader="Registers 1", SortCol="Name", SortOrder="ASCENDING", VisibleCols=["Name";"Value";"Description"], ColWidths=[100;144;262]
+TableHeader="Watched Data 1", SortCol="Expression", SortOrder="ASCENDING", VisibleCols=["Expression";"Value";"Location";"Refresh"], ColWidths=[158;100;104;118]
 TableHeader="RegisterSelectionDialog", SortCol="None", SortOrder="ASCENDING", VisibleCols=[], ColWidths=[]
+TableHeader="Watched Data 2", SortCol="Expression", SortOrder="ASCENDING", VisibleCols=["Expression";"Value";"Location";"Refresh"], ColWidths=[100;100;100;116]
+TableHeader="Watched Data 3", SortCol="Expression", SortOrder="ASCENDING", VisibleCols=["Expression";"Value";"Location";"Refresh"], ColWidths=[100;100;100;116]
+TableHeader="Watched Data 4", SortCol="Expression", SortOrder="ASCENDING", VisibleCols=["Expression";"Value";"Location";"Refresh"], ColWidths=[100;100;100;116]
+TableHeader="Watched Data 5", SortCol="Expression", SortOrder="ASCENDING", VisibleCols=["Expression";"Value";"Location";"Refresh"], ColWidths=[100;100;100;116]
+TableHeader="Watched Data 6", SortCol="Expression", SortOrder="ASCENDING", VisibleCols=["Expression";"Value";"Location";"Refresh"], ColWidths=[100;100;100;116]
+TableHeader="Watched Data 7", SortCol="Expression", SortOrder="ASCENDING", VisibleCols=["Expression";"Value";"Location";"Refresh"], ColWidths=[100;100;100;116]
+TableHeader="Watched Data 8", SortCol="Expression", SortOrder="ASCENDING", VisibleCols=["Expression";"Value";"Location";"Refresh"], ColWidths=[100;100;100;116]
+TableHeader="Watched Data 9", SortCol="Expression", SortOrder="ASCENDING", VisibleCols=["Expression";"Value";"Location";"Refresh"], ColWidths=[100;100;100;116]
+TableHeader="Watched Data 10", SortCol="Expression", SortOrder="ASCENDING", VisibleCols=["Expression";"Value";"Location";"Refresh"], ColWidths=[100;100;100;116]
+TableHeader="Watched Data 11", SortCol="Expression", SortOrder="ASCENDING", VisibleCols=["Expression";"Value";"Location";"Refresh"], ColWidths=[100;100;100;116]
+TableHeader="TargetExceptionDialog", SortCol="Name", SortOrder="ASCENDING", VisibleCols=["Name";"Value";"Address";"Description"], ColWidths=[27;27;27;26]
+WatchedExpression="B2B_Board2_Debug", RefreshRate=5, Window=Watched Data 1
+WatchedExpression="Arm_Control_Debug", RefreshRate=5, Window=Watched Data 1
+WatchedExpression="Arm_Control_Config", RefreshRate=5, Window=Watched Data 1
+WatchedExpression="B2B_Board2_Debug", Window=Watched Data 1
+WatchedExpression="Arm_Control_Debug", Window=Watched Data 1
+WatchedExpression="Arm_Control_Config", Window=Watched Data 1
+WatchedExpression="B2B_Board2_Debug", Window=Watched Data 1
+WatchedExpression="Arm_Control_Debug", Window=Watched Data 1
+WatchedExpression="Arm_Control_Config", Window=Watched Data 1
+WatchedExpression="B2B_Board2_Debug", Window=Watched Data 1
+WatchedExpression="Arm_Control_Debug", Window=Watched Data 1
+WatchedExpression="Arm_Control_Config", Window=Watched Data 1
+WatchedExpression="B2B_Board2_Debug", Window=Watched Data 1
+WatchedExpression="Arm_Control_Debug", Window=Watched Data 1
+WatchedExpression="Arm_Control_Config", Window=Watched Data 1
+WatchedExpression="B2B_Board2_Debug", Window=Watched Data 1
+WatchedExpression="Arm_Control_Debug", Window=Watched Data 1
+WatchedExpression="Arm_Control_Config", Window=Watched Data 1
+WatchedExpression="B2B_Board2_Debug", Window=Watched Data 1
+WatchedExpression="Arm_Control_Debug", Window=Watched Data 1
+WatchedExpression="Arm_Control_Config", Window=Watched Data 1
+WatchedExpression="B2B_Board2_Debug", Window=Watched Data 1
+WatchedExpression="Arm_Control_Debug", Window=Watched Data 1
+WatchedExpression="Arm_Control_Config", Window=Watched Data 1
+WatchedExpression="B2B_Board2_Debug", Window=Watched Data 1
+WatchedExpression="Arm_Control_Debug", Window=Watched Data 1
+WatchedExpression="Arm_Control_Config", Window=Watched Data 1
+WatchedExpression="Arm_Control_Config", RefreshRate=5, Window=Watched Data 1
+WatchedExpression="B2B_Board2_Debug", Window=Watched Data 1
+WatchedExpression="Arm_Control_Debug", Window=Watched Data 1
+WatchedExpression="Arm_Control_Config", Window=Watched Data 1
+WatchedExpression="Arm_Control_Config", Window=Watched Data 1

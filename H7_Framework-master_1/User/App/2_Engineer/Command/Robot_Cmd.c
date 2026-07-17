@@ -79,6 +79,7 @@ void Robot_Cmd_Init(void)
     remote_auxiliary.mechanism_action = DUALBOARD_ACTION_STOP_ALL;
     manual_picture_lift = 0;
     manual_picture_transverse = 0;
+    manual_leadscrew = LEADSCREW_TARGET_MIN;
 }
 
 void Robot_Cmd_Update(void)
@@ -268,15 +269,31 @@ static void Cmd_Update_Manual_Picture(void)
     }
 }
 
-// 手动丝杠目标：键盘 Ctrl+G(上)/Ctrl+Z(下) 累加。目标直接写入本板 LeadScrew 任务，不走 B2B。
+// 手动丝杠目标：键盘 Ctrl+G/Z，或机构模式 S1=3、S2=3 时用右摇杆 CH1 上下调节。
+// 仅在丝杠回零完成并进入位置跟踪状态后接受摇杆，避免回零后目标突跳。
 static void Cmd_Update_Manual_LeadScrew(void)
 {
+    const Engineer_LeadScrew_Status_t status = Engineer_LeadScrew_Get_Status();
+
+    if (!status.homing_done || status.state != ENGINEER_LEADSCREW_TRACKING) {
+        manual_leadscrew = LEADSCREW_TARGET_MIN;
+        Engineer_LeadScrew_Set_Target(manual_leadscrew);
+        return;
+    }
+
     if (Cmd_KeyActive(DBUS.KeyBoard.Ctrl, VT13.KeyBoard.Ctrl) &&
         (Cmd_VT13KeyboardActive() || DBUS.Ctrl_Mode == 1U)) {
         const int32_t delta = (int32_t)Cmd_KeyActive(DBUS.KeyBoard.G, VT13.KeyBoard.G) -
                               (int32_t)Cmd_KeyActive(DBUS.KeyBoard.Z, VT13.KeyBoard.Z);
         manual_leadscrew = Cmd_Limit_Int32(manual_leadscrew + delta * LEADSCREW_STEP,
                                            LEADSCREW_TARGET_MIN, LEADSCREW_TARGET_MAX);
+    } else if (!VT13.offline.is_online &&
+               DBUS.offline.is_online &&
+               DBUS.Remote.S1 == 3U &&
+               DBUS.Remote.S2 == 3U) {
+        manual_leadscrew = Cmd_Limit_Int32(
+            manual_leadscrew + Cmd_Stick_Delta(DBUS.Remote.CH1, LEADSCREW_STEP),
+            LEADSCREW_TARGET_MIN, LEADSCREW_TARGET_MAX);
     }
     Engineer_LeadScrew_Set_Target(manual_leadscrew);
 }

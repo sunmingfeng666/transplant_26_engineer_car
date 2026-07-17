@@ -23,6 +23,19 @@ typedef struct {
     uint8_t fault;
 } Engineer_LeadScrew_Status_t;
 
+typedef struct {
+    volatile uint8_t direct_enable;
+    volatile float direct_speed;
+    volatile int32_t encoder;
+    volatile int16_t speed;
+    volatile int16_t output;
+    volatile uint8_t motor_online;
+    volatile uint8_t up_limit;
+    volatile uint8_t down_limit;
+} Engineer_LeadScrew_Debug_t;
+
+extern volatile Engineer_LeadScrew_Debug_t Engineer_LeadScrew_Debug;
+
 uint8_t Engineer_LeadScrew_Init(void);
 void Engineer_LeadScrew_Task(const Picture_Motor_Group_t *p_motor);
 Engineer_LeadScrew_Status_t Engineer_LeadScrew_Get_Status(void);

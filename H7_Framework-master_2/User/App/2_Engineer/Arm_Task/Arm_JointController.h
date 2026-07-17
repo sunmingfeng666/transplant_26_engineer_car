@@ -12,6 +12,7 @@ typedef enum {
     ARM_MODE_MIT,
     ARM_MODE_GRAVITY,
     ARM_MODE_GRAVITY_IMPEDANCE,
+    ARM_MODE_CASCADE,
     ARM_MODE_DISABLED,
 } Arm_Control_Mode_e;
 
@@ -33,6 +34,11 @@ typedef struct {
     volatile float impedance_kd[ARM_JOINT_COUNT];
     volatile float impedance_i_limit[ARM_JOINT_COUNT];
     volatile float torque_limit[ARM_JOINT_COUNT];
+    volatile float cascade_position_kp[ARM_JOINT_COUNT];
+    volatile float cascade_velocity_kp[ARM_JOINT_COUNT];
+    volatile float cascade_velocity_ki[ARM_JOINT_COUNT];
+    volatile float cascade_velocity_limit[ARM_JOINT_COUNT];
+    volatile float cascade_integral_limit[ARM_JOINT_COUNT];
     volatile float ramp_time_s;
     Arm_Gravity_Model_t gravity[ARM_JOINT_COUNT];
     /* 一键动作触发：0=无，1=展开,2=收回,3/4=自保护,5=存矿,6=取矿,7=机构复位。
@@ -50,7 +56,11 @@ typedef struct {
     volatile uint16_t saturation_mask;
     volatile float target[ARM_JOINT_COUNT];
     volatile float position[ARM_JOINT_COUNT];
+    volatile float position_error[ARM_JOINT_COUNT];
     volatile float velocity[ARM_JOINT_COUNT];
+    volatile float cascade_target_velocity[ARM_JOINT_COUNT];
+    volatile float cascade_velocity_error[ARM_JOINT_COUNT];
+    volatile float cascade_integral_tau[ARM_JOINT_COUNT];
     volatile float gravity_tau[ARM_JOINT_COUNT];
     volatile float impedance_tau[ARM_JOINT_COUNT];
     volatile float command_tau[ARM_JOINT_COUNT];
@@ -64,11 +74,25 @@ typedef struct {
     volatile uint8_t clamp_close;
 } Arm_Control_Debug_t;
 
+typedef struct {
+    float target_velocity;
+    float velocity_error;
+    float integral_tau;
+    float torque;
+    uint8_t saturated;
+} Arm_Cascade_Output_t;
+
 extern volatile Arm_Control_Config_t Arm_Control_Config;
 extern volatile Arm_Control_Debug_t Arm_Control_Debug;
 
 float Arm_JointController_Gravity(uint8_t axis, const float joint_position[ARM_JOINT_COUNT]);
 float Arm_JointController_Impedance(uint8_t axis, float target, float position, float velocity);
+Arm_Cascade_Output_t Arm_JointController_Cascade(uint8_t axis,
+                                                 float target,
+                                                 float position,
+                                                 float velocity,
+                                                 float dt_s);
+void Arm_JointController_ResetCascade(uint8_t axis);
 float Arm_JointController_LimitTorque(uint8_t axis, float torque, uint8_t *saturated);
 
 #endif
