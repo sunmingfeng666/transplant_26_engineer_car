@@ -3,7 +3,7 @@
 //
 #include "All_Task.h"
 #include "Robot_Config.h"
-#include "Arm_Ctrl.h"
+#include "Controller_Transmit.h"
 #include "Buzzer.h"
 #include "DBUS.h"
 #include "Message_Center.h"
@@ -57,27 +57,12 @@ void IMU_Task(void *argument)
 }
 
 //运动控制任务 1000Hz
-static IMU_Data_t imu ={0};
-static DBUS_Typedef motor_dbus = {0};
-static VT13_Typedef motor_vt13 = {0};
-static System_State_t motor_sys_state = {0};
 void Motor_Task(void *argument)
 {
     (void)argument;
     TickType_t xLastWakeTime = xTaskGetTickCount();
     const TickType_t xTimeIncrement = pdMS_TO_TICKS(1);//绝对延时1ms
 
-    Subscriber_t *imu_sub = NULL;
-    Subscriber_t *dbus_sub = NULL;
-    Subscriber_t *vt13_sub = NULL;
-    Subscriber_t *sys_state_sub = NULL;
-
-    imu_sub = SubRegister("imu_data", sizeof(IMU_Data_t));
-    dbus_sub = SubRegister("dbus_data", sizeof(DBUS_Typedef));
-    vt13_sub = SubRegister("vt13_data", sizeof(VT13_Typedef));
-    sys_state_sub = SubRegister("system_state", sizeof(System_State_t));
-
-    Arm_Ctrl_Init();
     System_State_Report(ID_CHASSIS, STATUS_RUN);
     System_State_Report(ID_GIMBAL, STATUS_RUN);
     System_State_Report(ID_SHOOT, STATUS_RUN);
@@ -86,27 +71,11 @@ void Motor_Task(void *argument)
     {
         vTaskDelayUntil(&xLastWakeTime, xTimeIncrement);
 
-        if (imu_sub) SubGetMessage(imu_sub, &imu);
-
-        if (dbus_sub) SubGetMessage(dbus_sub, &motor_dbus);
-        if (vt13_sub) SubGetMessage(vt13_sub, &motor_vt13);
-        if (sys_state_sub) SubGetMessage(sys_state_sub, &motor_sys_state);
-
-        bool remote_online = motor_dbus.offline.is_online || motor_vt13.offline.is_online;
-        bool safe_mode = (motor_sys_state.global_mode == GLOBAL_SAFE_LOCK ||
-                          motor_sys_state.global_mode == GLOBAL_MODULE_ERROR ||
-                          motor_sys_state.global_mode == GLOBAL_STANDBY);
-
-        if (!remote_online || safe_mode) {
-            Arm_Ctrl_Stop();
-        } else {
-            Arm_Ctrl_Update(&motor_dbus);
-        }
-
+        Controller_Transmit_Update();
     }
 }
 
-//定时器中断
+
 void MY_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim) {
     //定时器4 1000Hz
     if (htim->Instance == TIM4) {

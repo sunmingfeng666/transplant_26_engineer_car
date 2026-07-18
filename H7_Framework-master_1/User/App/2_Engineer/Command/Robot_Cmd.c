@@ -47,6 +47,7 @@ typedef struct {
     DBUS_Typedef dbus;
     VT13_Typedef vt13;
     B2B_Aux_Command_t auxiliary;
+    B2B_Arm_Feedback_t arm_feedback;
 } B2B_Remote_Debug_t;
 
 volatile B2B_Remote_Debug_t B2B_Remote_Debug = {0};
@@ -108,7 +109,8 @@ static void Cmd_Parse_DualBoard_Frames(void)
 {
     uint8_t buf[DUALBOARD_REMOTE_FRAME_LEN];
     uint16_t len = 0U;
-    B2B_Remote_Debug_t debug_snapshot = {0};
+    // 调试快照体积较大，使用静态存储，避免耗尽仅 512 字节的 Command 任务栈。
+    static B2B_Remote_Debug_t debug_snapshot = {0};
 
     if (!DualBoard_Take_Cmd_Frame(buf, sizeof(buf), &len)) return;
     if (len != sizeof(B2B_Remote_Frame_t)) return;
@@ -118,11 +120,19 @@ static void Cmd_Parse_DualBoard_Frames(void)
     if (frame->auxiliary.mechanism_action > DUALBOARD_ACTION_CLEAR_FAULT) return;
     if (frame->auxiliary.store_slot > 3U) return;
     if (frame->remote_online_bits & (uint8_t)~(DUALBOARD_REMOTE_DBUS_ONLINE | DUALBOARD_REMOTE_VT13_ONLINE)) return;
+    if (frame->arm_online_mask & (uint8_t)~0x3FU) return;
 
     remote_online_bits = frame->remote_online_bits;
     remote_auxiliary = frame->auxiliary;
     remote_last_seq = frame->seq;
     remote_last_update_ms = HAL_GetTick();
+
+    B2B_Arm_Feedback.online_mask = frame->arm_online_mask;
+    B2B_Arm_Feedback.last_update_ms = remote_last_update_ms;
+    B2B_Arm_Feedback.is_online = true;
+    for (uint8_t axis = 0U; axis < 6U; ++axis) {
+        B2B_Arm_Feedback.position[axis] = (float)frame->arm_position_mrad[axis] * 0.001f;
+    }
 
     if (remote_online_bits & DUALBOARD_REMOTE_DBUS_ONLINE) {
         DBUS_Resolved((uint8_t *)frame->dbus_raw, &DBUS, sizeof(frame->dbus_raw));
@@ -147,6 +157,7 @@ static void Cmd_Parse_DualBoard_Frames(void)
     debug_snapshot.dbus = DBUS;
     debug_snapshot.vt13 = VT13;
     debug_snapshot.auxiliary = remote_auxiliary;
+    debug_snapshot.arm_feedback = B2B_Arm_Feedback;
     B2B_Remote_Debug = debug_snapshot;
 }
 
@@ -155,6 +166,7 @@ static void Cmd_Update_From_Remote(void)
     const uint32_t now = HAL_GetTick();
     const uint8_t link_online = (remote_last_update_ms != 0U &&
                                  (now - remote_last_update_ms) <= DUALBOARD_CHASSIS_TIMEOUT_MS) ? 1U : 0U;
+    B2B_Arm_Feedback.is_online = link_online ? true : false;
     const uint8_t remote_online = (DBUS.offline.is_online || VT13.offline.is_online) ? 1U : 0U;
     const uint8_t auxiliary_override =
         (remote_auxiliary.aux_flags & DUALBOARD_AUX_OVERRIDE_ACTIVE) ? 1U : 0U;

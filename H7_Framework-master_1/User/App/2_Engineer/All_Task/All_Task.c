@@ -21,6 +21,7 @@
 #include "Engineer_Feedback.h"
 #include "Comm_DualBoard.h"
 #include "Vofa.h"
+#include "Custom_Controller_Link.h"
 
 // 板1执行机构调试快照：只用于集中观察，不参与实际控制。
 typedef struct {
@@ -61,11 +62,13 @@ void Command_Task(void *argument)
     PubRegister("store_motors", &store_motors, sizeof(Store_Motor_Group_t));
 
     Robot_Cmd_Init();
+    Custom_Controller_Link_Init();
     for(;;)
     {
         vTaskDelayUntil(&xLastWakeTime, xTimeIncrement);
 
         Robot_Cmd_Update();
+        Custom_Controller_Link_Update();
     }
 }
 

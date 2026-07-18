@@ -11,6 +11,7 @@
 #include "Robot_Config.h"
 #include "Comm_DualBoard.h"
 #include "Power_CAP.h"
+#include "Controller_Transmit.h"
 
 Engineer_Custom_Motor_Group_t engineer_custom_motors;
 
@@ -22,9 +23,12 @@ OFFLINE_NODE(&DBUS.offline, DBUS_OFFLINE_TIME, GROUP_NONE);
 UART_RX_NODE(&huart7, 21, VT13_RX_DATA, NULL, 21, &VT13, VT13_Resolved);
 OFFLINE_NODE(&VT13.offline, DBUS_OFFLINE_TIME, GROUP_NONE);
 
-UART_RX_NODE(&huart1, 0, Referee_Rx_Buf[0], Referee_Rx_Buf[1], REFEREE_RXFRAME_LENGTH, NULL, Referee_System_Frame_Update);
-OFFLINE_NODE(&Referee.offline, REFEREE_OFFLINE_TIME, GROUP_NONE);
-
+// USART1 PA10 接收板1返回的固定39字节 0x0309 机械臂角度帧。
+static uint8_t Controller_Feedback_Rx_Buf[2][CONTROLLER_RX_FRAME_LENGTH]
+    __attribute__((section(".RAM_D2")));
+UART_RX_NODE(&huart1, CONTROLLER_RX_FRAME_LENGTH,
+             Controller_Feedback_Rx_Buf[0], Controller_Feedback_Rx_Buf[1],
+             CONTROLLER_RX_FRAME_LENGTH, NULL, Controller_Feedback_Rx_Callback);
 
 // 机械臂第一阶段：只注册 J1-J6 电机反馈，不接旧串口/自定义控制器链路。
 CAN_RX_NODE(FDCAN2, 0x14,  &engineer_custom_motors.J1_DM4310,  DM_Standard_Resolve);

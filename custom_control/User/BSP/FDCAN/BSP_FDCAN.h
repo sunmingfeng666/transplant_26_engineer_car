@@ -14,6 +14,9 @@ typedef struct
     uint32_t fifo_full_count;   // FIFO满次数
     uint32_t msg_lost_count;    // 消息丢失次数
     uint32_t error_count;       // 读取错误次数
+    uint32_t last_identifier;   // 最近收到的标准帧 ID，便于 Ozone 排查 ID 配置
+    uint8_t last_dlc;           // 最近一帧的实际字节数
+    uint8_t last_data[8];       // 最近一帧前 8 字节
 } CAN_Stats_t;
 
 extern CAN_Stats_t can1_stats;

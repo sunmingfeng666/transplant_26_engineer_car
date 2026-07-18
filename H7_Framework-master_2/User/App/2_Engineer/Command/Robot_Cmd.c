@@ -526,13 +526,15 @@ static void Cmd_DualBoard_Sync(void)
     if (action_override && !oneclick_override_last) mechanism_action_seq++;
     oneclick_override_last = action_override;
 
-    // Robot_Cmd 为 200Hz；USART10 的 60B 固定帧降为 100Hz，单帧约 5.2ms 可在下一帧前发完。
+    // Robot_Cmd 为 200Hz；USART10 的 73B 固定帧降为 100Hz，单帧约 6.4ms 可在下一帧前发完。
     remote_tx_divider++;
     if (remote_tx_divider < 2U) return;
     remote_tx_divider = 0U;
 
     uint8_t dbus_raw[18];
     uint8_t vt13_raw[21];
+    float arm_position[6];
+    uint8_t arm_online_mask;
     uint8_t remote_online_bits = 0U;
     B2B_Aux_Command_t auxiliary = {
         .global_mode = (uint8_t)cmd_sys_state.global_mode,
@@ -556,10 +558,15 @@ static void Cmd_DualBoard_Sync(void)
     __disable_irq();
     memcpy(dbus_raw, DBUS_RAW_SNAPSHOT, sizeof(dbus_raw));
     memcpy(vt13_raw, VT13_RAW_SNAPSHOT, sizeof(vt13_raw));
+    for (uint8_t axis = 0U; axis < 6U; ++axis) {
+        arm_position[axis] = Arm_Control_Debug.position[axis];
+    }
+    arm_online_mask = (uint8_t)(Arm_Control_Debug.online_mask & 0x3FU);
     if (primask == 0U) __enable_irq();
 
     uint8_t send_result = DualBoard_Send_Remote(&huart10, dbus_raw, vt13_raw,
-                                                 remote_online_bits, &auxiliary);
+                                                 remote_online_bits, &auxiliary,
+                                                 arm_position, arm_online_mask);
     /* 调试快照体积较大，放入静态存储区，避免占用 Command 任务栈。 */
     static B2B_Board2_Debug_t debug_snapshot = {0};
     debug_snapshot.last_update_ms = HAL_GetTick();

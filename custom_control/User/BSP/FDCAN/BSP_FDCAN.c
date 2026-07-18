@@ -295,8 +295,16 @@ static inline void FDCAN_Rx_FIFO_Process(FDCAN_HandleTypeDef *hfdcan, uint32_t f
             if (stats) stats->error_count++;
             break;
         }
-        if (stats) stats->rx_count++;
-        CAN_App_Frame_Dispatch(hfdcan, rx_header.Identifier, rx_data, DLC_To_Bytes(rx_header.DataLength));
+        const uint8_t data_length = DLC_To_Bytes(rx_header.DataLength);
+        if (stats) {
+            stats->rx_count++;
+            stats->last_identifier = rx_header.Identifier;
+            stats->last_dlc = data_length;
+            for (uint8_t i = 0U; i < 8U; ++i) {
+                stats->last_data[i] = (i < data_length) ? rx_data[i] : 0U;
+            }
+        }
+        CAN_App_Frame_Dispatch(hfdcan, rx_header.Identifier, rx_data, data_length);
         if (fill_level > 64) break;
     }
 }

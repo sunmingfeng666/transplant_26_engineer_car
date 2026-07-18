@@ -76,12 +76,7 @@ void Engineer_Feedback_Task(const Chassis_Motor_Group_t *chassis,
     feedback.picture_transverse_pos = picture_status.transverse_position;
     feedback.store_pos_mrad = (int16_t)(store_status.position * 1000.0f);
 
-    // 底盘反馈帧：Chassis_Ctrl 只记录状态，这里统一上报。
-    // 先发底盘帧(阻塞轮询，发完 gState 复位)，再发整车帧(中断)，避免同一 UART 上 IT 冲突。
-    Engineer_Chassis_Feedback_t chassis_fb = Engineer_Chassis_Get_Feedback();
-    (void)DualBoard_Send_Chassis_Feedback(&huart10,
-                                          chassis_fb.status,
-                                          chassis_fb.motor_online_bits,
-                                          chassis_fb.error_code);
+    // USART10 只发送 24 字节整车反馈帧；其中已包含底盘状态、在线位和错误码。
+    // 不再发送旧 12 字节底盘反馈，避免板2的 24 字节定长接收发生帧错位。
     (void)DualBoard_Send_Engineer_Feedback(&huart10, &feedback);
 }

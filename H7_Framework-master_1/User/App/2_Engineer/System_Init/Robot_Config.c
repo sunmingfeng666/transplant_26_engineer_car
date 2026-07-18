@@ -12,6 +12,7 @@
 #include "Comm_DualBoard.h"
 #include "Power_CAP.h"
 #include "Power_Meter.h"
+#include "Custom_Controller_Link.h"
 
 Chassis_Motor_Group_t chassis_motors;
 Picture_Motor_Group_t picture_motors;
@@ -19,10 +20,12 @@ Store_Motor_Group_t store_motors;
 
 // DBUS 与 VT13 都由机械臂板接收；底盘板只解析 USART10 转发的两份原始帧。
 
-// 裁判系统固定接到底盘板 USART1：双缓冲 DMA 接收支持连续帧和跨回调断包。
-UART_RX_NODE(&huart1, 0, Referee_Rx_Buf[0], Referee_Rx_Buf[1],
-             REFEREE_RXFRAME_LENGTH, NULL, Referee_System_Frame_Update);
-OFFLINE_NODE(&Referee.offline, REFEREE_OFFLINE_TIME, GROUP_NONE);
+// USART1 改为自定义控制器双向链路：PA10 接收固定39字节 0x0302 帧。
+static uint8_t Custom_Controller_Rx_Buf[2][CUSTOM_CONTROLLER_FRAME_LENGTH]
+    __attribute__((section(".RAM_D2")));
+UART_RX_NODE(&huart1, CUSTOM_CONTROLLER_FRAME_LENGTH,
+             Custom_Controller_Rx_Buf[0], Custom_Controller_Rx_Buf[1],
+             CUSTOM_CONTROLLER_FRAME_LENGTH, NULL, Custom_Controller_Link_Rx_Callback);
 
 // 底盘板 USART10 接收遥控板发来的 V3 固定长度原始遥控帧。
 // 两个缓冲区放在 D2 RAM，因为 DMA 不能访问 H7 的所有内存区域。

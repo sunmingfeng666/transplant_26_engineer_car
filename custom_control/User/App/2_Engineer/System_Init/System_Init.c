@@ -14,7 +14,7 @@
 #include "Robot_Cmd.h"
 #include "Robot_Config.h"
 #include "System_Indicator.h"
-#include "Arm_Ctrl.h"
+#include "Controller_Transmit.h"
 
 uint32_t stm32_id[3];
 void Get_UID(uint32_t *uid) {
@@ -47,7 +47,7 @@ void System_Init() {
 
     HAL_TIM_Base_Start_IT(&htim4);
     //PWM设备初始化
-    BSP_PWM_Start(&buzzer_pwm);
+    //BSP_PWM_Start(&buzzer_pwm);
     BSP_PWM_Start(&imu_heater_pwm);
     //BSP_PWM_Start(&ws2812_pwm);
     //BMI088初始化
@@ -56,6 +56,7 @@ void System_Init() {
     System_Indicator_Init();
     System_State_Init();
     //指令中心初始化
-    Arm_Ctrl_Init();
+    // 初始化双向控制器链路；本机保持输出仍需Ozone手动使能且通过全部安全条件。
+    Controller_Transmit_Init();
     Robot_Cmd_Init();
 }

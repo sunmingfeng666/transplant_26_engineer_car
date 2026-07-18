@@ -24,9 +24,9 @@ volatile Arm_Control_Config_t Arm_Control_Config = {
         ARM_MODE_CASCADE, ARM_MODE_CASCADE, ARM_MODE_CASCADE,
     },
     .gravity_scale = {0.0f, 1.0f, 0.0f, 1.0f, 1.0f, 0.0f},
-    .impedance_kp = {0.0f, 16.0f, 12.0f, 12.0f, 12.0f, 8.0f},
+    .impedance_kp = {0.0f, 35.0f, 15.0f, 12.0f, 5.0f, 3.0f},
     .impedance_ki = {0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f},
-    .impedance_kd = {0.0f, 4.0f, 4.0f, 1.0f, 3.0f, 3.0f},
+    .impedance_kd = {0.0f, 2.0f, 1.0f, 1.0f, 0.75f, 0.75f},
     .impedance_i_limit = {0.0f, 0.5f, 0.5f, 0.5f, 0.5f, 0.5f},
     .torque_limit = {20.0f, 20.0f, 20.0f, 20.0f, 20.0f, 2.0f},
     /* 新增轴先关闭积分并使用保守增益；J6保留已经调过的参数。 */

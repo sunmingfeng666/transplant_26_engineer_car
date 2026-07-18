@@ -12,7 +12,7 @@
 #define CHASSIS_CHECKSUM_INDEX 10U
 #define ENGINEER_CHECKSUM_INDEX 22U
 #define ENGINEER_FEEDBACK_CHECKSUM_INDEX 22U
-#define REMOTE_CRC_INDEX 57U
+#define REMOTE_CRC_INDEX 70U
 
 B2B_Tx_t Tx_Data = {0};
 B2B_Rx_t Rx_Data = {0};
@@ -20,6 +20,7 @@ B2B_Chassis_Cmd_t B2B_Chassis_Cmd = {0};
 B2B_Picture_Cmd_t B2B_Picture_Cmd = {0};
 B2B_Chassis_Feedback_t B2B_Chassis_Feedback = {0};
 B2B_Engineer_Feedback_t B2B_Engineer_Feedback = {0};
+B2B_Arm_Feedback_t B2B_Arm_Feedback = {0};
 
 typedef struct {
     uint8_t buf[DUALBOARD_MAX_PAYLOAD];
@@ -152,6 +153,7 @@ void DualBoard_Comm_Init(void)
     memset(&B2B_Picture_Cmd, 0, sizeof(B2B_Picture_Cmd));
     memset(&B2B_Chassis_Feedback, 0, sizeof(B2B_Chassis_Feedback));
     memset(&B2B_Engineer_Feedback, 0, sizeof(B2B_Engineer_Feedback));
+    memset(&B2B_Arm_Feedback, 0, sizeof(B2B_Arm_Feedback));
     cmd_inbox_len = 0;
     cmd_inbox_pending = 0U;
 }
@@ -238,9 +240,11 @@ uint8_t DualBoard_Send_Remote(UART_HandleTypeDef *huart,
                               const uint8_t dbus_raw[18],
                               const uint8_t vt13_raw[21],
                               uint8_t remote_online_bits,
-                              const B2B_Aux_Command_t *auxiliary)
+                              const B2B_Aux_Command_t *auxiliary,
+                              const float arm_position[6],
+                              uint8_t arm_online_mask)
 {
-    if (huart == NULL || dbus_raw == NULL || vt13_raw == NULL || auxiliary == NULL) return 1U;
+    if (huart == NULL || dbus_raw == NULL || vt13_raw == NULL || auxiliary == NULL || arm_position == NULL) return 1U;
     if (huart->gState != HAL_UART_STATE_READY) return 2U;
 
     remote_tx_frame.sof = DUALBOARD_SOF;
@@ -250,10 +254,14 @@ uint8_t DualBoard_Send_Remote(UART_HandleTypeDef *huart,
     memcpy(remote_tx_frame.dbus_raw, dbus_raw, sizeof(remote_tx_frame.dbus_raw));
     memcpy(remote_tx_frame.vt13_raw, vt13_raw, sizeof(remote_tx_frame.vt13_raw));
     remote_tx_frame.auxiliary = *auxiliary;
+    remote_tx_frame.arm_online_mask = (uint8_t)(arm_online_mask & 0x3FU);
+    for (uint8_t axis = 0U; axis < 6U; ++axis) {
+        remote_tx_frame.arm_position_mrad[axis] = Float_To_Int16(arm_position[axis] * 1000.0f);
+    }
     remote_tx_frame.crc16 = Frame_CRC16((const uint8_t *)&remote_tx_frame, REMOTE_CRC_INDEX);
     remote_tx_frame.tail = DUALBOARD_TAIL;
 
-    // 60B@115200 约 5.2ms；静态帧配合 UART busy 检查，100Hz 非阻塞发送不会覆盖在途数据。
+    // 73B@115200 约 6.4ms；静态帧配合 UART busy 检查，100Hz 非阻塞发送不会覆盖在途数据。
     return (HAL_UART_Transmit_IT(huart, (uint8_t *)&remote_tx_frame,
                                  sizeof(remote_tx_frame)) == HAL_OK) ? 0U : 2U;
 }
@@ -413,7 +421,7 @@ void DualBoard_UART_Rx(uint8_t *Buff, uint16_t Size)
     if (Buff == NULL || Size == 0U) return;
 
     // 通信层只做完整性校验+入库，不解析业务字段。解析交给 App 命令层。
-    // 60B：工程车 V3 原始遥控帧；通信层只校验并交付 App。
+    // 73B：工程车 V3 原始遥控及机械臂角度帧；通信层只校验并交付 App。
     if (Size == sizeof(B2B_Remote_Frame_t)) {
         if (Remote_Frame_Is_Valid((const B2B_Remote_Frame_t *)Buff)) {
             Inbox_Store(Buff, Size);

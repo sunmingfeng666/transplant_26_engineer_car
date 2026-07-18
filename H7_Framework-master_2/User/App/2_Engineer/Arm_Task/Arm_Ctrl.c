@@ -40,6 +40,7 @@ static const float ARM_HOME_POSE[ARM_JOINT_COUNT] = {
 #define ARM_TERMINAL_CLOSE_TORQUE 1.0f
 #define ARM_TERMINAL_OPEN_TORQUE (-1.2f)
 #define ARM_MODE_UNKNOWN          0xFFU
+#define ARM_MODE_TRANSITION_TIME_S 0.1f
 
 static float s_target[ARM_JOINT_COUNT];
 static PID_t s_external_pid[ARM_JOINT_COUNT];
@@ -48,7 +49,9 @@ static uint8_t s_prev_online[ARM_JOINT_COUNT];
 static uint8_t s_target_valid_mask;
 static uint8_t s_terminal_prev_online;
 static uint8_t s_clamp_close;
+static uint8_t s_last_debug_impedance_enable;
 static uint32_t s_last_retry_tick;
+static float s_mode_transition_from_tau[ARM_JOINT_COUNT];
 
 static uint8_t Arm_IsDisabled(void)
 {
@@ -138,6 +141,7 @@ static void Arm_ConfigureAxis(uint8_t axis, uint8_t requested_mode)
     FDCAN_HandleTypeDef *bus = Arm_GetBus(axis);
     uint16_t id = Arm_GetMotorId(axis);
     uint16_t new_dm_mode = Arm_DmMode(requested_mode);
+    uint8_t old_mode = s_active_mode[axis];
 
     if (requested_mode == ARM_MODE_DISABLED) {
         Motor_Mode(bus, id, MIT_MODE, DM_CMD_RESET_MODE);
@@ -145,13 +149,31 @@ static void Arm_ConfigureAxis(uint8_t axis, uint8_t requested_mode)
         PID_Clear(&s_external_pid[axis]);
         Arm_JointController_ResetCascade(axis);
         Arm_Control_Debug.ramp[axis] = 0.0f;
+        Arm_Control_Debug.mode_transition_blend[axis] = 1.0f;
+        s_mode_transition_from_tau[axis] = 0.0f;
         return;
     }
 
-    if (s_active_mode[axis] != ARM_MODE_UNKNOWN &&
-        s_active_mode[axis] != ARM_MODE_DISABLED &&
-        Arm_DmMode(s_active_mode[axis]) != new_dm_mode) {
-        Motor_Mode(bus, id, Arm_DmMode(s_active_mode[axis]), DM_CMD_RESET_MODE);
+    /*
+     * 串级和阻抗都通过 MIT 发送力矩。二者切换时只换控制算法，
+     * 不重复复位/使能电机，并从当前实际反馈力矩开始平滑过渡。
+     */
+    if (old_mode != ARM_MODE_UNKNOWN &&
+        old_mode != ARM_MODE_DISABLED &&
+        old_mode != requested_mode &&
+        Arm_DmMode(old_mode) == new_dm_mode) {
+        s_mode_transition_from_tau[axis] = Arm_Control_Debug.impedance_tau[axis];
+        Arm_Control_Debug.mode_transition_blend[axis] = 0.0f;
+        s_active_mode[axis] = requested_mode;
+        PID_Clear(&s_external_pid[axis]);
+        Arm_JointController_ResetCascade(axis);
+        return;
+    }
+
+    if (old_mode != ARM_MODE_UNKNOWN &&
+        old_mode != ARM_MODE_DISABLED &&
+        Arm_DmMode(old_mode) != new_dm_mode) {
+        Motor_Mode(bus, id, Arm_DmMode(old_mode), DM_CMD_RESET_MODE);
     }
     Motor_Mode(bus, id, new_dm_mode, DM_CMD_CLEAR_ERROR);
     Motor_Mode(bus, id, new_dm_mode, DM_CMD_MOTOR_MODE);
@@ -159,6 +181,26 @@ static void Arm_ConfigureAxis(uint8_t axis, uint8_t requested_mode)
     PID_Clear(&s_external_pid[axis]);
     Arm_JointController_ResetCascade(axis);
     Arm_Control_Debug.ramp[axis] = (requested_mode == ARM_MODE_POSITION) ? 1.0f : 0.0f;
+    Arm_Control_Debug.mode_transition_blend[axis] = 1.0f;
+    s_mode_transition_from_tau[axis] = 0.0f;
+}
+
+static float Arm_ApplyModeTransition(uint8_t axis, float feedback_tau, float dt_s)
+{
+    float blend;
+
+    if (axis >= ARM_JOINT_COUNT) return 0.0f;
+    blend = Arm_Control_Debug.mode_transition_blend[axis];
+    if (blend >= 1.0f) {
+        Arm_Control_Debug.mode_transition_blend[axis] = 1.0f;
+        return feedback_tau;
+    }
+
+    blend += dt_s / ARM_MODE_TRANSITION_TIME_S;
+    blend = Arm_Clamp(blend, 0.0f, 1.0f);
+    Arm_Control_Debug.mode_transition_blend[axis] = blend;
+    return s_mode_transition_from_tau[axis] +
+           (feedback_tau - s_mode_transition_from_tau[axis]) * blend;
 }
 
 static void Arm_LoadExternalPidParam(uint8_t axis, float kpid[3])
@@ -214,6 +256,33 @@ static void Arm_LimitTargets(void)
     s_target[ARM_AXIS_J4] = Arm_Clamp(s_target[ARM_AXIS_J4], ARM_J4_MIN, ARM_J4_MAX);
     s_target[ARM_AXIS_J5] = Arm_Clamp(s_target[ARM_AXIS_J5], ARM_J5_MIN, ARM_J5_MAX);
     s_target[ARM_AXIS_J6] = Arm_Clamp(s_target[ARM_AXIS_J6], P_MIN, P_MAX);
+}
+#endif
+
+#if ARM_CONTROL_BUILD_MODE == ARM_BUILD_MODE_NORMAL
+static void Arm_SetSelectedControlMode(uint8_t mode)
+{
+    if (mode != ARM_MODE_CASCADE && mode != ARM_MODE_GRAVITY_IMPEDANCE) return;
+
+    Arm_Control_Debug.selected_control_mode = mode;
+    /* J1 固定使用 PV；DBUS 只统一切换 J2~J6。 */
+    for (uint8_t axis = ARM_AXIS_J2; axis < ARM_JOINT_COUNT; axis++) {
+        Arm_Control_Config.axis_mode[axis] = mode;
+    }
+}
+
+static void Arm_UpdateDebugControlMode(void)
+{
+    uint8_t enable = Arm_Control_Config.debug_impedance_enable;
+
+    /* 只接受0/1；一键动作中暂缓应用，结束后再按当前标志位切换。 */
+    if (enable > 1U || enable == s_last_debug_impedance_enable ||
+        Arm_Control_Debug.oneclick_active) return;
+
+    Arm_SetSelectedControlMode(
+        enable ? ARM_MODE_GRAVITY_IMPEDANCE : ARM_MODE_CASCADE);
+    s_last_debug_impedance_enable = enable;
+    Arm_Control_Debug.mode_switch_count++;
 }
 #endif
 
@@ -278,17 +347,28 @@ uint8_t Engineer_Arm_Init(void)
     memcpy(s_target, ARM_HOME_POSE, sizeof(s_target));
     memset(s_external_pid, 0, sizeof(s_external_pid));
     memset(s_prev_online, 0, sizeof(s_prev_online));
+    memset(s_mode_transition_from_tau, 0, sizeof(s_mode_transition_from_tau));
     memset((void *)&Arm_Control_Debug, 0, sizeof(Arm_Control_Debug));
     for (uint8_t axis = 0U; axis < ARM_JOINT_COUNT; axis++) {
         s_active_mode[axis] = ARM_MODE_UNKNOWN;
+        Arm_Control_Debug.active_mode[axis] = ARM_MODE_UNKNOWN;
+        Arm_Control_Debug.mode_transition_blend[axis] = 1.0f;
         Arm_InitExternalPid(axis);
         Arm_JointController_ResetCascade(axis);
     }
     s_target_valid_mask = 0U;
     s_terminal_prev_online = 0U;
     s_clamp_close = 1U;
+    s_last_debug_impedance_enable = 0U;
+    Arm_Control_Config.debug_impedance_enable = 0U;
     s_last_retry_tick = 0U;
     Arm_Control_Debug.state = ARM_STATE_WAIT_FEEDBACK;
+#if ARM_CONTROL_BUILD_MODE == ARM_BUILD_MODE_NORMAL
+    /* 每次上电恢复为 J1 PV、J2~J6 串级 PID。 */
+    Arm_SetSelectedControlMode(ARM_MODE_CASCADE);
+#else
+    Arm_Control_Debug.selected_control_mode = ARM_MODE_CASCADE;
+#endif
     Arm_OneClick_Init();
     return 0U;
 }
@@ -314,6 +394,10 @@ void Engineer_Arm_Task(const Arm_Motor_Group_t *feedback,
     Arm_Control_Debug.remote_online =
         ((dbus != NULL && dbus->offline.is_online) ||
          (vt13 != NULL && vt13->offline.is_online)) ? 1U : 0U;
+
+#if ARM_CONTROL_BUILD_MODE == ARM_BUILD_MODE_NORMAL
+    Arm_UpdateDebugControlMode();
+#endif
 
     for (uint8_t axis = 0U; axis < ARM_JOINT_COUNT; axis++) {
         const DM_MOTOR_DATA_Typedef *motor = Arm_GetFeedback(feedback, axis);
@@ -396,6 +480,7 @@ void Engineer_Arm_Task(const Arm_Motor_Group_t *feedback,
         float impedance_tau = 0.0f;
         float command_tau = 0.0f;
 
+        Arm_Control_Debug.active_mode[axis] = mode;
         Arm_Control_Debug.target[axis] = s_target[axis];
         Arm_Control_Debug.position_error[axis] =
             ((online_mask & (1U << axis)) != 0U) ? (s_target[axis] - motor->pos) : 0.0f;
@@ -408,6 +493,7 @@ void Engineer_Arm_Task(const Arm_Motor_Group_t *feedback,
             Arm_Control_Debug.gravity_tau[axis] = 0.0f;
             Arm_Control_Debug.impedance_tau[axis] = 0.0f;
             Arm_Control_Debug.command_tau[axis] = 0.0f;
+            Arm_Control_Debug.mode_transition_blend[axis] = 1.0f;
             continue;
         }
 
@@ -416,6 +502,7 @@ void Engineer_Arm_Task(const Arm_Motor_Group_t *feedback,
             Arm_Control_Debug.gravity_tau[axis] = 0.0f;
             Arm_Control_Debug.impedance_tau[axis] = 0.0f;
             Arm_Control_Debug.command_tau[axis] = 0.0f;
+            Arm_Control_Debug.mode_transition_blend[axis] = 1.0f;
             continue;
         }
 
@@ -441,7 +528,11 @@ void Engineer_Arm_Task(const Arm_Motor_Group_t *feedback,
                 break;
             case ARM_MODE_GRAVITY_IMPEDANCE:
                 gravity_tau = Arm_JointController_Gravity(axis, joint_position);
-                impedance_tau = Arm_CalcExternalPidTorque(axis, s_target[axis], motor->pos);
+                /* 真实阻抗：Kp*位置误差-Kd*实际速度；重力前馈在外部单独叠加。 */
+                PID_Clear(&s_external_pid[axis]);
+                Arm_JointController_ResetCascade(axis);
+                impedance_tau = Arm_JointController_Impedance(
+                    axis, s_target[axis], motor->pos, motor->vel);
                 break;
             case ARM_MODE_MIT:
                 impedance_tau = Arm_CalcExternalPidTorque(axis, s_target[axis], motor->pos);
@@ -464,6 +555,11 @@ void Engineer_Arm_Task(const Arm_Motor_Group_t *feedback,
                 PID_Clear(&s_external_pid[axis]);
                 Arm_JointController_ResetCascade(axis);
                 break;
+            }
+            /* 模式切换只平滑反馈力矩，重力前馈保持连续。 */
+            impedance_tau = Arm_ApplyModeTransition(axis, impedance_tau, dt_s);
+            if (Arm_Control_Debug.mode_transition_blend[axis] < 1.0f) {
+                any_ramping = 1U;
             }
             command_tau = (gravity_tau + impedance_tau) * Arm_Control_Debug.ramp[axis];
             command_tau = Arm_JointController_LimitTorque(axis, command_tau, &output_saturated);

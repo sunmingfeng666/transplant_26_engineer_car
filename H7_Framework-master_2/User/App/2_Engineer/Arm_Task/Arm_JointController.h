@@ -27,6 +27,8 @@ typedef enum {
 
 typedef struct {
     volatile uint8_t master_enable;
+    /* Ozone调试开关：0=J2~J6串级PID，1=J2~J6重力阻抗；J1始终为PV。 */
+    volatile uint8_t debug_impedance_enable;
     volatile uint8_t axis_mode[ARM_JOINT_COUNT];
     volatile float gravity_scale[ARM_JOINT_COUNT];
     volatile float impedance_kp[ARM_JOINT_COUNT];
@@ -51,6 +53,10 @@ typedef struct {
 typedef struct {
     volatile uint8_t state;
     volatile uint8_t remote_online;
+    /* DBUS 中挡切换的控制模式，以及各关节当前实际运行模式。 */
+    volatile uint8_t selected_control_mode;
+    volatile uint8_t active_mode[ARM_JOINT_COUNT];
+    volatile uint32_t mode_switch_count;
     volatile uint16_t online_mask;
     volatile uint16_t fault_mask;
     volatile uint16_t saturation_mask;
@@ -65,6 +71,8 @@ typedef struct {
     volatile float impedance_tau[ARM_JOINT_COUNT];
     volatile float command_tau[ARM_JOINT_COUNT];
     volatile float ramp[ARM_JOINT_COUNT];
+    /* 仅用于 MIT 内部控制器切换：0=刚切换，1=过渡完成。 */
+    volatile float mode_transition_blend[ARM_JOINT_COUNT];
     /* 一键动作遥测：active=是否执行中，id=当前动作编号，phase=内部阶段。 */
     volatile uint8_t oneclick_active;
     volatile uint8_t oneclick_id;

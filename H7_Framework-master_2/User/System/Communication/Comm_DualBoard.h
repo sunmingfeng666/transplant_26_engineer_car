@@ -14,7 +14,7 @@ typedef enum {
 #define DUALBOARD_CHASSIS_FRAME_LEN 12U
 #define DUALBOARD_ENGINEER_FRAME_LEN 24U
 #define DUALBOARD_ENGINEER_FEEDBACK_FRAME_LEN 24U
-#define DUALBOARD_REMOTE_FRAME_LEN 60U
+#define DUALBOARD_REMOTE_FRAME_LEN 73U
 #define DUALBOARD_CHASSIS_TIMEOUT_MS 100U
 
 #define DUALBOARD_REMOTE_DBUS_ONLINE (1U << 0)
@@ -102,7 +102,7 @@ typedef struct __attribute__((packed)) {
     uint8_t aux_flags;
 } B2B_Aux_Command_t;
 
-/* 工程车 V3 固定 60 字节：18B DBUS + 21B VT13 + 14B 辅助结构 + CRC16。 */
+/* 工程车 V3 固定 73 字节：原始遥控、辅助结构、机械臂六轴实际角度和 CRC16。 */
 typedef struct __attribute__((packed)) {
     uint8_t sof;
     uint8_t version;
@@ -111,6 +111,8 @@ typedef struct __attribute__((packed)) {
     uint8_t dbus_raw[18];
     uint8_t vt13_raw[21];
     B2B_Aux_Command_t auxiliary;
+    uint8_t arm_online_mask;
+    int16_t arm_position_mrad[6];
     uint16_t crc16;
     uint8_t tail;
 } B2B_Remote_Frame_t;
@@ -180,6 +182,14 @@ typedef struct {
     bool is_online;
 } B2B_Chassis_Feedback_t;
 
+/* 板2机械臂实际角度快照，供板1转发给自定义控制器。 */
+typedef struct {
+    float position[6];
+    uint8_t online_mask;
+    uint32_t last_update_ms;
+    bool is_online;
+} B2B_Arm_Feedback_t;
+
 typedef struct __attribute__((packed)) {
     int16_t ch0:11;
     int16_t ch1:11;
@@ -204,6 +214,7 @@ extern B2B_Chassis_Cmd_t B2B_Chassis_Cmd;
 extern B2B_Picture_Cmd_t B2B_Picture_Cmd;
 extern B2B_Chassis_Feedback_t B2B_Chassis_Feedback;
 extern B2B_Engineer_Feedback_t B2B_Engineer_Feedback;
+extern B2B_Arm_Feedback_t B2B_Arm_Feedback;
 
 void DualBoard_Comm_Init(void);
 
@@ -228,7 +239,9 @@ uint8_t DualBoard_Send_Remote(UART_HandleTypeDef *huart,
                               const uint8_t dbus_raw[18],
                               const uint8_t vt13_raw[21],
                               uint8_t remote_online_bits,
-                              const B2B_Aux_Command_t *auxiliary);
+                              const B2B_Aux_Command_t *auxiliary,
+                              const float arm_position[6],
+                              uint8_t arm_online_mask);
 uint8_t DualBoard_Send_Chassis_Feedback(UART_HandleTypeDef *huart,
                                         DualBoard_Chassis_Feedback_Status_e status,
                                         uint8_t motor_online_bits,

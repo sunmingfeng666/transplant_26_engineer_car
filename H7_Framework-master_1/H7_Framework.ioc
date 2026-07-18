@@ -344,6 +344,7 @@ NVIC.TimeBaseIP=TIM17
 NVIC.UART5_IRQn=true\:5\:0\:false\:false\:true\:true\:true\:true\:true
 NVIC.UART7_IRQn=true\:5\:0\:false\:false\:true\:true\:true\:true\:true
 NVIC.USART10_IRQn=true\:5\:0\:false\:false\:true\:true\:true\:true\:true
+NVIC.USART1_IRQn=true\:5\:0\:false\:false\:true\:true\:true\:true\:true
 NVIC.UsageFault_IRQn=true\:0\:0\:false\:false\:true\:false\:false\:false\:false
 PA0.Locked=true
 PA0.Signal=S_TIM2_CH1_ETR
