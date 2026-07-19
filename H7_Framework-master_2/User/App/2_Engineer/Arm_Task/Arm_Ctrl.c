@@ -27,9 +27,13 @@
  * 上电默认"正常位"(收起位)，J1~J6 弧度，取自老代码 Move_Task/One_Click 正常模式基准。
  * 注：老代码 J4=1.8637 超过本代码上限 ARM_J4_MAX(1.848)，此处直接取合法上限。
  */
-static const float ARM_HOME_POSE[ARM_JOINT_COUNT] = {
-    -0.8310f, -0.0753f, 0.0811f, 1.848f, -0.8379f, -2.6858f
-};
+// static const float ARM_HOME_POSE[ARM_JOINT_COUNT] = {
+//     -0.8310f, -0.0753f, 0.0811f, 1.848f, -0.8379f, -2.6858f
+// };
+
+ static const float ARM_HOME_POSE[ARM_JOINT_COUNT] = {
+     0,0,0,0,0,0
+ };
 
 #define ARM_JOINT_SPEED           2.0f
 #define ARM_DBUS_STEP             0.000005f
@@ -110,6 +114,10 @@ static uint8_t Arm_RequestedMode(uint8_t axis)
     if (axis == ARM_AXIS_J2 || axis == ARM_AXIS_J4 || axis == ARM_AXIS_J5) {
         return ARM_MODE_GRAVITY;
     }
+    return ARM_MODE_POSITION;
+#elif ARM_CONTROL_BUILD_MODE == ARM_BUILD_MODE_CALIBRATION
+    /* 标定固件只使用达妙位置速度模式；上电目标由首次反馈捕获。 */
+    (void)axis;
     return ARM_MODE_POSITION;
 #else
     uint8_t mode;
@@ -422,8 +430,9 @@ void Engineer_Arm_Task(const Arm_Motor_Group_t *feedback,
 
         online_mask |= (uint16_t)(1U << axis);
         if (!s_prev_online[axis]) {
-#if ARM_CONTROL_BUILD_MODE == ARM_BUILD_MODE_GRAVITY_ONLY
-            /* 重力调试时J1/J3/J6保持上电瞬间位置，不主动前往正常收起位。 */
+#if (ARM_CONTROL_BUILD_MODE == ARM_BUILD_MODE_GRAVITY_ONLY) || \
+    (ARM_CONTROL_BUILD_MODE == ARM_BUILD_MODE_CALIBRATION)
+            /* 重力/标定固件捕获上电瞬间位置，不主动前往正常收起位。 */
             s_target[axis] = motor->pos;
 #else
             /* 上电首次上线：目标设为正常位，机械臂主动收拢到收起姿态(而非停在当前位置)。 */
@@ -444,13 +453,13 @@ void Engineer_Arm_Task(const Arm_Motor_Group_t *feedback,
 
     Arm_UpdateRemoteTarget(dbus, vt13, dt_s);
 
-#if ARM_MATLAB_DEBUG_ENABLE && (ARM_CONTROL_BUILD_MODE != ARM_BUILD_MODE_GRAVITY_ONLY)
+#if ARM_MATLAB_DEBUG_ENABLE && (ARM_CONTROL_BUILD_MODE == ARM_BUILD_MODE_NORMAL)
     if (Arm_MatlabDebug_ApplyTarget(s_target, ARM_JOINT_COUNT)) {
         Arm_LimitTargets();
     }
 #endif
 
-#if ARM_CONTROL_BUILD_MODE != ARM_BUILD_MODE_GRAVITY_ONLY
+#if ARM_CONTROL_BUILD_MODE == ARM_BUILD_MODE_NORMAL
     /*
      * 一键动作引擎：激活时沿轨迹覆盖 s_target[]（优先级高于 DBUS/MATLAB），
      * 覆盖后再钳一次限位。空闲则不动 s_target[]，上面逻辑照常生效。
@@ -461,7 +470,8 @@ void Engineer_Arm_Task(const Arm_Motor_Group_t *feedback,
         for (uint8_t axis = 0U; axis < ARM_JOINT_COUNT; axis++) {
             current_pos[axis] = Arm_GetFeedback(feedback, axis)->pos;
         }
-        if (s_target_valid_mask == 0x3FU && Arm_Control_Config.master_enable != 0xFFU) {
+        if ((online_mask & 0x3FU) == 0x3FU && s_target_valid_mask == 0x3FU &&
+            Arm_Control_Config.master_enable != 0xFFU) {
             if (Arm_OneClick_Update(current_pos, s_target, ARM_JOINT_COUNT)) {
                 Arm_LimitTargets();
             }

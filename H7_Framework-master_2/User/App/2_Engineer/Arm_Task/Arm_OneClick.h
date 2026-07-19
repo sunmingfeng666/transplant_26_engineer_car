@@ -14,6 +14,10 @@ typedef enum {
     ARM_ONECLICK_STORE = 5,
     ARM_ONECLICK_TAKE = 6,
     ARM_ONECLICK_RESET = 7,
+    ARM_ONECLICK_TO_ZERO = 8,
+    ARM_ONECLICK_PREGRASP = 9,
+    ARM_ONECLICK_RETURN_ZERO = 10,
+    ARM_ONECLICK_RETURN_HOME = 11,
 } Arm_OneClick_Req_e;
 
 typedef enum {
@@ -34,6 +38,9 @@ typedef enum {
     ARM_ONECLICK_RESULT_TIMEOUT,
     ARM_ONECLICK_RESULT_PEER_FAULT,
     ARM_ONECLICK_RESULT_NO_SLOT,   /* 存矿满库/取矿空库：拒绝动作，不更新占用位图 */
+    ARM_ONECLICK_RESULT_BAD_START, /* 预抓取动作的实际起点与轨迹起点不符 */
+    ARM_ONECLICK_RESULT_TRACKING_FAULT,
+    ARM_ONECLICK_RESULT_CALIBRATION_REQUIRED,
 } Arm_OneClick_Result_e;
 
 /* 动作协调器给命令层和末端夹爪控制使用的只读输出。 */

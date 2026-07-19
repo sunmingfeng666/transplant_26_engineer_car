@@ -15,6 +15,10 @@
   build** — J2/J4/J5 run their validated gravity models without impedance PID;
   J1/J3/J6 capture and hold their power-on positions with the motor position
   loop. Remote targets, MATLAB targets, and one-click trajectories are ignored.
+- `ARM_CONTROL_BUILD_MODE = ARM_BUILD_MODE_CALIBRATION`: **zero calibration
+  build** — all six joints capture and hold the first valid feedback instead of
+  moving to the folded HOME. DBUS small-step control remains available; MATLAB
+  injection and all one-click actions are compiled out.
 - `axis_mode[n] = 0`: position-speed mode.
 - `axis_mode[n] = 1`: gravity compensation.
 - `axis_mode[n] = 2`: gravity compensation plus external impedance.
@@ -61,6 +65,40 @@ Recommended first test:
 Every transition captures the current position and ramps torque in over
 `ramp_time_s`. Never enable several unverified axes simultaneously.
 
+### Zero calibration build (`ARM_CONTROL_BUILD_MODE = ARM_BUILD_MODE_CALIBRATION`)
+
+Use this build before exporting any real-arm pre-grasp trajectory. Mechanically
+support the arm at the confirmed physical zero, build with the calibration mode,
+and verify one joint at a time with a `+0.05 rad` logical command. Record
+`motor_direction` as `+1` for the same direction or `-1` for the opposite
+direction, then derive `motor_ratio` from motor-feedback change / real joint
+change. Do not send the DM `ZERO_POSITION` command.
+
+The export gate remains closed until all six directions are exactly `+1/-1`,
+all six ratios are positive, and `reach_pregrasp/home_config.json` sets
+`calibration.valid` to true. Re-run MATLAB `reach_planner`, then run
+`reach_pregrasp/export_pregrasp_firmware.py`; this replaces the guarded
+`Arm_PregraspTrajectory.inc` placeholder with checked coefficients.
+
+### Pre-grasp one-click interface (Ozone)
+
+Set `Arm_Control_Config.oneclick_pregrasp_unit` to `1..6`, then write one request
+to `Arm_Control_Config.oneclick_request`:
+
+| Request | Motion |
+| --- | --- |
+| `8` | folded HOME -> physical/logical zero |
+| `9` | zero -> selected pre-grasp and hold |
+| `10` | selected pre-grasp -> zero |
+| `11` | zero -> folded HOME |
+
+Set `Arm_Control_Config.oneclick_abort=1` to stop. Observe
+`Arm_Control_Debug.oneclick_result`: `7` is `BAD_START`, `8` is
+`TRACKING_FAULT`, and `9` is `CALIBRATION_REQUIRED`. Requests are accepted only
+with all six axes online. Requests 8..11 additionally require the actual start
+to match the directed trajectory start within `0.08 rad`; tracking error above
+`0.20 rad` for `0.20 s` stops the action and holds the measured position.
+
 ## State values
 
 - `0`: waiting for first valid feedback from all six joints.
@@ -80,15 +118,20 @@ baud and 100 Hz, regardless of the MATLAB debug switch. Use it for VOFA
 waveforms or MATLAB co-simulation; edit the single `VOFA_JustFloat` call in
 `All_Task.c` to change what the channels carry.
 
-| Channel | Signal |
-| --- | --- |
-| 0-5 | J1..J6 actual position (rad) — MATLAB reads these six for the 3D model |
-| 6-8 | J2 / J4 / J5 target |
-| 9-11 | J2 / J4 / J5 velocity |
-| 12-14 | J2 / J4 / J5 gravity torque |
-| 15-17 | J2 / J4 / J5 command torque |
-| 18 | controller state |
-| 19 | MATLAB link online flag (0 when debug build is off) |
+| Channel | CSV column | Signal |
+| --- | --- | --- |
+| 0/1/2 | CH0/CH1/CH2 | J1 target / position / error (rad) |
+| 3/4/5 | CH3/CH4/CH5 | J2 target / position / error (rad) |
+| 6/7/8 | CH6/CH7/CH8 | J3 target / position / error (rad) |
+| 9/10/11 | CH9/CH10/CH11 | J4 target / position / error (rad) |
+| 12/13/14 | CH12/CH13/CH14 | J5 target / position / error (rad) |
+| 15/16/17 | CH15/CH16/CH17 | J6 target / position / error (rad) |
+| 18 | CH18 | Six-axis online bitmap; normal value is 63 (`0x3F`) |
+| 19 | CH19 | Six-axis fault bitmap; normal value is 0 |
+
+For calibration CSV capture, keep all 20 channels enabled. Start recording before
+moving a joint and keep at least two seconds of stationary data before and after
+each movement. Do not rename or reorder the columns before sharing the CSV.
 
 Telemetry is best-effort. A busy UART drops the current frame rather than
 blocking the 1 kHz motor-control task.

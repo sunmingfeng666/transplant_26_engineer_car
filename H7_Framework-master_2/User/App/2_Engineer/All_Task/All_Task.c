@@ -91,13 +91,16 @@ void Motor_Task(void *argument)
         // UART7 @100Hz：输出机械臂遥测帧。
         if (++vofa_divider >= 10U) {
 
-            VOFA_JustFloat(&huart7,18,
+            /* 标定CSV固定20列：每轴target/position/error各3列，末尾为online/fault位图。 */
+            VOFA_JustFloat(&huart7,20,
                 Arm_Control_Debug.target[0],Arm_Control_Debug.position[0],Arm_Control_Debug.position_error[0],
                 Arm_Control_Debug.target[1],Arm_Control_Debug.position[1],Arm_Control_Debug.position_error[1],
                 Arm_Control_Debug.target[2],Arm_Control_Debug.position[2],Arm_Control_Debug.position_error[2],
                 Arm_Control_Debug.target[3],Arm_Control_Debug.position[3],Arm_Control_Debug.position_error[3],
                 Arm_Control_Debug.target[4],Arm_Control_Debug.position[4],Arm_Control_Debug.position_error[4],
-                Arm_Control_Debug.target[5],Arm_Control_Debug.position[5],Arm_Control_Debug.position_error[5]);
+                Arm_Control_Debug.target[5],Arm_Control_Debug.position[5],Arm_Control_Debug.position_error[5],
+                (float)(Arm_Control_Debug.online_mask & 0x3FU),
+                (float)(Arm_Control_Debug.fault_mask & 0x3FU));
 
             vofa_divider = 0U;
 

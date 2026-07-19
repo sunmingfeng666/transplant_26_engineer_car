@@ -738,6 +738,8 @@ static const float q_coeffs_self2[6][40][4] = {
 
 /* 存矿/取矿四条轨迹数据量较大，独立放置以保持本文件的索引逻辑清晰。 */
 #include "Arm_StoreTakeTrajectory.inc"
+/* 实车预抓取系数由标定后的离线导出器生成；未标定时只包含无效标志。 */
+#include "Arm_PregraspTrajectory.inc"
 
 /* 每条轨迹的元信息：系数表 / 时间节点 / 分段数 / 总时长 / 时间缩放。 */
 typedef struct {
@@ -764,12 +766,42 @@ static const Arm_Traj_Meta_t s_traj_meta[ARM_TRAJ_COUNT] = {
     [ARM_TRAJ_TAKE_1] = {(const float *)q_coeffs_take1, t_knots_take1,
                          ARM_TRAJ_SEG_TAKE1, 0.7560f, 2.5f},
     [ARM_TRAJ_TAKE_2] = {(const float *)q_coeffs_take2, t_knots_take2,
-                         ARM_TRAJ_SEG_TAKE2, 0.9744f, 2.5f},
+                          ARM_TRAJ_SEG_TAKE2, 0.9744f, 2.5f},
+#if ARM_PREGRASP_CALIBRATION_VALID
+    [ARM_TRAJ_TO_ZERO] = {(const float *)q_coeffs_pregrasp_to_zero,
+                          t_knots_pregrasp_to_zero, ARM_PREGRASP_SEG_TO_ZERO,
+                          ARM_PREGRASP_TOTAL_TO_ZERO, 1.0f},
+    [ARM_TRAJ_PREGRASP_1] = {(const float *)q_coeffs_pregrasp_unit_1,
+                             t_knots_pregrasp_unit_1, ARM_PREGRASP_SEG_UNIT_1,
+                             ARM_PREGRASP_TOTAL_UNIT_1, 1.0f},
+    [ARM_TRAJ_PREGRASP_2] = {(const float *)q_coeffs_pregrasp_unit_2,
+                             t_knots_pregrasp_unit_2, ARM_PREGRASP_SEG_UNIT_2,
+                             ARM_PREGRASP_TOTAL_UNIT_2, 1.0f},
+    [ARM_TRAJ_PREGRASP_3] = {(const float *)q_coeffs_pregrasp_unit_3,
+                             t_knots_pregrasp_unit_3, ARM_PREGRASP_SEG_UNIT_3,
+                             ARM_PREGRASP_TOTAL_UNIT_3, 1.0f},
+    [ARM_TRAJ_PREGRASP_4] = {(const float *)q_coeffs_pregrasp_unit_4,
+                             t_knots_pregrasp_unit_4, ARM_PREGRASP_SEG_UNIT_4,
+                             ARM_PREGRASP_TOTAL_UNIT_4, 1.0f},
+    [ARM_TRAJ_PREGRASP_5] = {(const float *)q_coeffs_pregrasp_unit_5,
+                             t_knots_pregrasp_unit_5, ARM_PREGRASP_SEG_UNIT_5,
+                             ARM_PREGRASP_TOTAL_UNIT_5, 1.0f},
+    [ARM_TRAJ_PREGRASP_6] = {(const float *)q_coeffs_pregrasp_unit_6,
+                             t_knots_pregrasp_unit_6, ARM_PREGRASP_SEG_UNIT_6,
+                             ARM_PREGRASP_TOTAL_UNIT_6, 1.0f},
+#endif
 };
+
+uint8_t Arm_Traj_IsAvailable(Arm_Traj_e traj)
+{
+    if (traj >= ARM_TRAJ_COUNT) return 0U;
+    return s_traj_meta[traj].coeffs != 0 && s_traj_meta[traj].t_knots != 0 &&
+           s_traj_meta[traj].segments > 0 && s_traj_meta[traj].total_time > 0.0f;
+}
 
 float Arm_Traj_TotalTime(Arm_Traj_e traj)
 {
-    if (traj >= ARM_TRAJ_COUNT) return 0.0f;
+    if (!Arm_Traj_IsAvailable(traj)) return 0.0f;
     return s_traj_meta[traj].total_time;
 }
 
@@ -784,7 +816,7 @@ float Arm_Traj_GetJoint(Arm_Traj_e traj, uint8_t joint_idx0, float current_t)
     int coeff_offset;
     float dt, a, b, c, d;
 
-    if (traj >= ARM_TRAJ_COUNT || joint_idx0 > 5U) return 0.0f;
+    if (!Arm_Traj_IsAvailable(traj) || joint_idx0 > 5U) return 0.0f;
     m = &s_traj_meta[traj];
 
     if (current_t <= 0.0f) current_t = 0.0f;

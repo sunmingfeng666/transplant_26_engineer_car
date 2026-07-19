@@ -14,6 +14,8 @@
 #define ARM_ONECLICK_MECHANISM_TIMEOUT_S 3.0f
 #define ARM_ONECLICK_TRACK_TIMEOUT_S     2.0f
 #define ARM_ONECLICK_JOINT_TOLERANCE     0.08f
+#define ARM_ONECLICK_TRACK_ERROR_MAX     0.20f
+#define ARM_ONECLICK_TRACK_ERROR_TIME_S  0.20f
 
 /* 存取矿复合动作请求对端机构(底盘板)到达的行程常量。集中在此便于随实车标定，
  * 仍经命令通道(Arm_OneClick_Output_t)下发，机械臂代码不直接操作对端电机。 */
@@ -27,7 +29,10 @@ static uint8_t s_request;
 static uint8_t s_first_traj;
 static uint8_t s_second_traj;
 static uint8_t s_playing_second;
+static uint8_t s_reverse_traj;
+static uint8_t s_pregrasp_action;
 static float s_phase_start;
+static float s_tracking_error_start;
 static float s_origin[ARM_JOINT_COUNT];
 static float s_segment_start[ARM_JOINT_COUNT];
 static float s_segment_end[ARM_JOINT_COUNT];
@@ -46,6 +51,36 @@ static uint8_t Arm_OneClick_IsComposite(uint8_t request)
 static uint8_t Arm_OneClick_UsesMechanism(uint8_t request)
 {
     return Arm_OneClick_IsComposite(request) || request == ARM_ONECLICK_RESET;
+}
+
+static uint8_t Arm_OneClick_IsPregraspAction(uint8_t request)
+{
+    return request >= ARM_ONECLICK_TO_ZERO && request <= ARM_ONECLICK_RETURN_HOME;
+}
+
+static uint8_t Arm_OneClick_PregraspTrajectory(uint8_t request,
+                                               uint8_t unit,
+                                               uint8_t *traj,
+                                               uint8_t *reverse)
+{
+    if (traj == NULL || reverse == NULL) return 0U;
+    *reverse = 0U;
+    if (request == ARM_ONECLICK_TO_ZERO) {
+        *traj = ARM_TRAJ_TO_ZERO;
+        return 1U;
+    }
+    if (request == ARM_ONECLICK_RETURN_HOME) {
+        *traj = ARM_TRAJ_TO_ZERO;
+        *reverse = 1U;
+        return 1U;
+    }
+    if (request != ARM_ONECLICK_PREGRASP && request != ARM_ONECLICK_RETURN_ZERO) {
+        return 0U;
+    }
+    if (unit < 1U || unit > 6U) return 0U;
+    *traj = (uint8_t)(ARM_TRAJ_PREGRASP_1 + unit - 1U);
+    *reverse = request == ARM_ONECLICK_RETURN_ZERO ? 1U : 0U;
+    return 1U;
 }
 
 static uint8_t Arm_OneClick_MapSingle(uint8_t request)
@@ -82,12 +117,16 @@ static void Arm_OneClick_Finish(uint8_t result, uint8_t mechanism_action)
     Arm_OneClick_SetResult(result);
     memset(&s_output, 0, sizeof(s_output));
     s_output.mechanism_action = mechanism_action;
+    s_reverse_traj = 0U;
+    s_pregrasp_action = 0U;
+    s_tracking_error_start = -1.0f;
 }
 
 static void Arm_OneClick_BeginPhase(uint8_t phase)
 {
     s_phase = phase;
     s_phase_start = DWT_GetTimeline_s();
+    s_tracking_error_start = -1.0f;
     Arm_Control_Debug.oneclick_phase = phase;
 }
 
@@ -102,6 +141,14 @@ static void Arm_OneClick_LoadTrajectoryStart(uint8_t traj, float *destination)
 {
     for (uint8_t i = 0U; i < ARM_JOINT_COUNT; i++) {
         destination[i] = Arm_Traj_GetJoint((Arm_Traj_e)traj, i, 0.0f);
+    }
+}
+
+static void Arm_OneClick_LoadDirectedStart(uint8_t traj, uint8_t reverse, float *destination)
+{
+    float sample_t = reverse ? Arm_Traj_TotalTime((Arm_Traj_e)traj) : 0.0f;
+    for (uint8_t i = 0U; i < ARM_JOINT_COUNT; i++) {
+        destination[i] = Arm_Traj_GetJoint((Arm_Traj_e)traj, i, sample_t);
     }
 }
 
@@ -123,6 +170,40 @@ static uint8_t Arm_OneClick_TargetReached(const float *position, const float *ta
         if (fabsf(position[i] - target[i]) > ARM_ONECLICK_JOINT_TOLERANCE) return 0U;
     }
     return 1U;
+}
+
+static uint8_t Arm_OneClick_CheckTracking(float now,
+                                          const float *position,
+                                          float *target)
+{
+    float max_error = 0.0f;
+
+    if (!s_pregrasp_action) return 0U;
+    for (uint8_t i = 0U; i < ARM_JOINT_COUNT; i++) {
+        float error = fabsf(position[i] - target[i]);
+        if (error > max_error) max_error = error;
+    }
+    if (max_error <= ARM_ONECLICK_TRACK_ERROR_MAX) {
+        s_tracking_error_start = -1.0f;
+        return 0U;
+    }
+    if (s_tracking_error_start < 0.0f) {
+        s_tracking_error_start = now;
+        return 0U;
+    }
+    if (now - s_tracking_error_start < ARM_ONECLICK_TRACK_ERROR_TIME_S) return 0U;
+
+    Arm_OneClick_Capture(position, target);
+    Arm_OneClick_Finish(ARM_ONECLICK_RESULT_TRACKING_FAULT, DUALBOARD_ACTION_STOP_ALL);
+    return 1U;
+}
+
+static uint8_t Arm_OneClick_Reject(uint8_t request, uint8_t result)
+{
+    s_request = request;
+    Arm_Control_Debug.oneclick_id = request;
+    Arm_OneClick_Finish(result, DUALBOARD_ACTION_HOLD);
+    return 0U;
 }
 
 static void Arm_OneClick_PrepareComposite(uint8_t request)
@@ -148,6 +229,9 @@ static uint8_t Arm_OneClick_Start(const float *position, uint8_t count)
     uint8_t traj;
 
     if (count < ARM_JOINT_COUNT) return 0U;
+    s_reverse_traj = 0U;
+    s_pregrasp_action = 0U;
+    s_tracking_error_start = -1.0f;
     if (request == ARM_ONECLICK_RESET) {
         if (!s_mechanism_ready) return 0U;
         s_request = request;
@@ -163,7 +247,24 @@ static uint8_t Arm_OneClick_Start(const float *position, uint8_t count)
         Arm_OneClick_BeginPhase(ARM_ONECLICK_PHASE_RESET_WAIT);
         return 1U;
     }
-    if (Arm_OneClick_IsComposite(request)) {
+    if (Arm_OneClick_IsPregraspAction(request)) {
+        uint8_t reverse;
+        if (!Arm_OneClick_PregraspTrajectory(request,
+                                             Arm_Control_Config.oneclick_pregrasp_unit,
+                                             &traj,
+                                             &reverse)) {
+            return Arm_OneClick_Reject(request, ARM_ONECLICK_RESULT_BAD_START);
+        }
+        if (!Arm_Traj_IsAvailable((Arm_Traj_e)traj)) {
+            return Arm_OneClick_Reject(request, ARM_ONECLICK_RESULT_CALIBRATION_REQUIRED);
+        }
+        memset(&s_output, 0, sizeof(s_output));
+        s_output.active = 1U;
+        s_first_traj = traj;
+        s_second_traj = 0xFFU;
+        s_reverse_traj = reverse;
+        s_pregrasp_action = 1U;
+    } else if (Arm_OneClick_IsComposite(request)) {
         if (!s_mechanism_ready) {
             return 0U;
         }
@@ -202,9 +303,13 @@ static uint8_t Arm_OneClick_Start(const float *position, uint8_t count)
     s_playing_second = 0U;
     Arm_OneClick_Capture(position, s_origin);
     Arm_OneClick_Capture(position, s_segment_start);
-    Arm_OneClick_LoadTrajectoryStart(traj, s_segment_end);
+    Arm_OneClick_LoadDirectedStart(traj, s_reverse_traj, s_segment_end);
+    if (s_pregrasp_action && !Arm_OneClick_TargetReached(position, s_segment_end)) {
+        return Arm_OneClick_Reject(request, ARM_ONECLICK_RESULT_BAD_START);
+    }
     Arm_Control_Debug.oneclick_active = 1U;
     Arm_Control_Debug.oneclick_id = request;
+    Arm_Control_Debug.oneclick_pregrasp_unit = Arm_Control_Config.oneclick_pregrasp_unit;
     Arm_OneClick_SetResult(ARM_ONECLICK_RESULT_RUNNING);
     Arm_OneClick_BeginPhase(ARM_ONECLICK_PHASE_LEAD_IN);
     return 1U;
@@ -217,7 +322,10 @@ void Arm_OneClick_Init(void)
     s_first_traj = 0U;
     s_second_traj = 0xFFU;
     s_playing_second = 0U;
+    s_reverse_traj = 0U;
+    s_pregrasp_action = 0U;
     s_phase_start = 0.0f;
+    s_tracking_error_start = -1.0f;
     s_mechanism_ready = 0U;
     s_mechanism_completed = 0U;
     s_mechanism_fault = 0U;
@@ -230,6 +338,7 @@ void Arm_OneClick_Init(void)
     Arm_Control_Debug.oneclick_active = 0U;
     Arm_Control_Debug.oneclick_id = ARM_ONECLICK_NONE;
     Arm_Control_Debug.oneclick_phase = ARM_ONECLICK_PHASE_IDLE;
+    Arm_Control_Debug.oneclick_pregrasp_unit = Arm_Control_Config.oneclick_pregrasp_unit;
     Arm_OneClick_SetResult(ARM_ONECLICK_RESULT_IDLE);
     Arm_Control_Debug.store_occupied_mask = 0U;
 }
@@ -285,6 +394,7 @@ uint8_t Arm_OneClick_Update(const float *position, float *target, uint8_t count)
     if (s_phase == ARM_ONECLICK_PHASE_LEAD_IN) {
         Arm_OneClick_Interpolate(s_segment_start, s_segment_end,
                                  elapsed / ARM_ONECLICK_LEAD_IN_S, target);
+        if (Arm_OneClick_CheckTracking(now, position, target)) return 1U;
         if (elapsed >= ARM_ONECLICK_LEAD_IN_S &&
             Arm_OneClick_TargetReached(position, s_segment_end)) {
             Arm_OneClick_BeginPhase(ARM_ONECLICK_PHASE_PLAYBACK);
@@ -296,9 +406,12 @@ uint8_t Arm_OneClick_Update(const float *position, float *target, uint8_t count)
 
     if (s_phase == ARM_ONECLICK_PHASE_PLAYBACK) {
         float total = Arm_Traj_TotalTime((Arm_Traj_e)s_first_traj);
+        float sample_t = s_reverse_traj ? total - elapsed : elapsed;
+        if (sample_t < 0.0f) sample_t = 0.0f;
         for (uint8_t i = 0U; i < ARM_JOINT_COUNT; i++) {
-            target[i] = Arm_Traj_GetJoint((Arm_Traj_e)s_first_traj, i, elapsed);
+            target[i] = Arm_Traj_GetJoint((Arm_Traj_e)s_first_traj, i, sample_t);
         }
+        if (Arm_OneClick_CheckTracking(now, position, target)) return 1U;
         if (elapsed < total) return 1U;
         if (!Arm_OneClick_TargetReached(position, target)) {
             if (elapsed >= total + ARM_ONECLICK_TRACK_TIMEOUT_S) {
@@ -345,6 +458,7 @@ uint8_t Arm_OneClick_Update(const float *position, float *target, uint8_t count)
             s_first_traj = s_second_traj;
             s_second_traj = 0xFFU;
             s_playing_second = 1U;
+            s_reverse_traj = 0U;
             Arm_OneClick_BeginPhase(ARM_ONECLICK_PHASE_PLAYBACK);
         } else if (elapsed >= ARM_ONECLICK_STAGE_TRANSITION_S + ARM_ONECLICK_TRACK_TIMEOUT_S) {
             Arm_OneClick_Finish(ARM_ONECLICK_RESULT_TIMEOUT, DUALBOARD_ACTION_STOP_ALL);

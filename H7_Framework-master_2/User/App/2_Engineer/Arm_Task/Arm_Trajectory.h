@@ -23,6 +23,13 @@ typedef enum {
     ARM_TRAJ_STORE_2,     // 存矿第二段
     ARM_TRAJ_TAKE_1,      // 取矿第一段
     ARM_TRAJ_TAKE_2,      // 取矿第二段
+    ARM_TRAJ_TO_ZERO,     // 实车收起HOME -> 机械零点
+    ARM_TRAJ_PREGRASP_1,  // 机械零点 -> 1号预抓取位
+    ARM_TRAJ_PREGRASP_2,
+    ARM_TRAJ_PREGRASP_3,
+    ARM_TRAJ_PREGRASP_4,
+    ARM_TRAJ_PREGRASP_5,
+    ARM_TRAJ_PREGRASP_6,
     ARM_TRAJ_COUNT
 } Arm_Traj_e;
 
@@ -34,5 +41,8 @@ float Arm_Traj_GetJoint(Arm_Traj_e traj, uint8_t joint_idx0, float current_t);
 
 /* 返回该轨迹的总时长(s，压缩后)。无效 traj 返回 0。 */
 float Arm_Traj_TotalTime(Arm_Traj_e traj);
+
+/* 轨迹数据是否可执行。预抓取标定未完成时返回0，防止误上车。 */
+uint8_t Arm_Traj_IsAvailable(Arm_Traj_e traj);
 
 #endif /* H7_FRAMEWORK_ARM_TRAJECTORY_H */

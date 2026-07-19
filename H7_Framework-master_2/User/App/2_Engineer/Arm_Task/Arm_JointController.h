@@ -43,11 +43,14 @@ typedef struct {
     volatile float cascade_integral_limit[ARM_JOINT_COUNT];
     volatile float ramp_time_s;
     Arm_Gravity_Model_t gravity[ARM_JOINT_COUNT];
-    /* 一键动作触发：0=无，1=展开,2=收回,3/4=自保护,5=存矿,6=取矿,7=机构复位。
+    /* 一键动作触发：0=无，1=展开,2=收回,3/4=自保护,5=存矿,6=取矿,7=机构复位，
+       8=收起HOME到零点，9=零点到预抓取，10=预抓取回零点，11=零点回收起HOME。
        引擎执行完自动清零。abort 置 1 可随时中止当前动作。 */
     volatile uint8_t oneclick_request;
     volatile uint8_t oneclick_abort;
     volatile uint8_t oneclick_store_slot;
+    /* 预抓取目标编号，仅在oneclick_request=9/10时使用，合法范围1~6。 */
+    volatile uint8_t oneclick_pregrasp_unit;
 } Arm_Control_Config_t;
 
 typedef struct {
@@ -80,6 +83,7 @@ typedef struct {
     volatile uint8_t oneclick_result;
     volatile uint8_t store_occupied_mask;
     volatile uint8_t clamp_close;
+    volatile uint8_t oneclick_pregrasp_unit;
 } Arm_Control_Debug_t;
 
 typedef struct {
